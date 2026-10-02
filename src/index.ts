@@ -601,7 +601,6 @@ const plugin = {
               sessionID,
               text: `Polish busy: ${autoSend ? "/polish-send" : "/polish"} is already running, please wait.`,
               delivery: "queue",
-              resume: false,
             })
           } catch {
             // no-op
@@ -610,16 +609,14 @@ const plugin = {
         }
         isPolishing = true
         // Progress notice FIRST so slow models never leave the user staring
-        // at nothing. delivery "steer" + resume false: visible in context
-        // without waking the session agent (a "queue" notice would start a
-        // whole agent turn, which is exactly the runaway-coder churn seen
-        // 2026-10-02).
+        // at nothing. Plain queue delivery: steer-style messages land
+        // server-side but never render, and the resume flag breaks the call
+        // on this server version — both learned the hard way 2026-10-02.
         try {
           await ctx.session.synthetic({
             sessionID,
             text: "Polishing your prompt, one moment…",
             delivery: "queue",
-            resume: false,
           })
         } catch {
           // progress is best-effort; the result still follows
@@ -675,7 +672,6 @@ const plugin = {
                   ? `Polished prompt (copy to send):\n\n${finalText}`
                   : `Polish failed: ${result.error}\n\nOriginal prompt:\n\n${original}`,
                 delivery: "queue",
-                resume: false,
               })
             } catch {
               // Last resort — the original prompt is still in the session
@@ -697,7 +693,6 @@ const plugin = {
               sessionID,
               text: "Usage: /polish <prompt>\n\nExample: /polish 帮我写个函数",
               delivery: "queue",
-              resume: false,
             })
             return
           }
@@ -716,7 +711,6 @@ const plugin = {
               sessionID,
               text: "Usage: /polish-send <prompt>\n\nExample: /polish-send 帮我写个函数",
               delivery: "queue",
-              resume: false,
             })
             return
           }
