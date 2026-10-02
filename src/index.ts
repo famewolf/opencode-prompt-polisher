@@ -1,4 +1,3 @@
-import { Plugin } from "@opencode/plugin"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
@@ -475,7 +474,7 @@ const POLISH_PERMISSIONS = [
   { action: "external_directory", resource: "*", effect: "deny" as const },
 ]
 
-export default Plugin.define({
+const plugin = {
   id: "prompt-polisher",
   async setup(ctx: any) {
     const denyAll = POLISH_PERMISSIONS
@@ -487,26 +486,34 @@ export default Plugin.define({
     // config-file registration below (see README). When the agent is not
     // present in the config, the command still works: the child session is
     // created with the model directly and a text-only prompt.
+    // Agent customization is best-effort: it must NEVER block command
+    // registration below. If the agent transform throws in a given runtime
+    // (e.g. missing agent, read-only editor), commands still register and the
+    // child session falls back to model-direct prompting.
     const registerPolishAgent = async () => {
-      await ctx.agent.transform((editor: any) => {
-        const existing = editor.get(POLISH_AGENT)
-        if (existing) {
-          editor.update(POLISH_AGENT, (agent: any) => {
-            agent.name = "Polish"
-            agent.system = POLISH_SYSTEM_PROMPT
-            agent.mode = "subagent"
-            agent.hidden = true
-            agent.steps = 1
-            agent.description =
-              "Hidden helper: rewrites user prompts into stronger versions. No tools, one step."
-            agent.permissions = denyAll
-          })
-        }
-      })
+      try {
+        await ctx.agent.transform((editor: any) => {
+          const existing = editor.get(POLISH_AGENT)
+          if (existing) {
+            editor.update(POLISH_AGENT, (agent: any) => {
+              agent.name = "Polish"
+              agent.system = POLISH_SYSTEM_PROMPT
+              agent.mode = "subagent"
+              agent.hidden = true
+              agent.steps = 1
+              agent.description =
+                "Hidden helper: rewrites user prompts into stronger versions. No tools, one step."
+              agent.permissions = denyAll
+            })
+          }
+        })
+      } catch (err) {
+        console.error(`[prompt-polisher] agent transform skipped: ${(err as Error)?.message ?? err}`)
+      }
     }
-    await registerPolishAgent()
-
-    // ── Commands ──
+    // Command registration runs FIRST so agent customization can never
+    // block it (see bisect 2026-10-02: commands were absent while the agent
+    // transform ran before them).
     await ctx.command.transform((editor: any) => {
       const runPolish = async (
         sessionID: string,
@@ -626,5 +633,10 @@ export default Plugin.define({
         },
       })
     })
+
+    // Agent customization last (best-effort, never blocks commands).
+    await registerPolishAgent()
   },
-}) as any
+}
+
+export default plugin

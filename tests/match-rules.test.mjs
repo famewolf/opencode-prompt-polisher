@@ -63,6 +63,11 @@ const tests = [
     expected: ["Keep language consistent with input", "Prefer TypeScript", "Use CTEs over subqueries"],
   },
   {
+    name: "haiku command has no pattern match",
+    prompt: "write a haiku about routers",
+    expected: ["Keep language consistent with input"],
+  },
+  {
     name: "no rules config",
     prompt: "anything",
     config: { ...DEFAULT_CONFIG, rules: { default: [], patterns: [] } },
