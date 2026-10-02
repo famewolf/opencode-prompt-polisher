@@ -648,18 +648,27 @@ const plugin = {
         } catch {
           // no agent turn running, or interrupt unsupported — proceed
         }
-        // Progress notice FIRST so slow models never leave the user staring
-        // at nothing. Plain queue delivery: steer-style messages land
-        // server-side but never render, and the resume flag breaks the call
-        // on this server version — both learned the hard way 2026-10-02.
+        // Progress notice: posted as a regular prompt (not a synthetic),
+        // because synthetics do not reliably render in this UI — the review
+        // result only became consistently visible after moving to
+        // session.prompt (2026-10-02). A bare prompt would wake the agent,
+        // so interrupt immediately after: the text stays visible, no turn
+        // runs on it. Both calls best-effort.
         try {
-          await ctx.session.synthetic({
+          await ctx.session.prompt({
             sessionID,
-            text: "Polishing your prompt, one moment…",
-            delivery: "queue",
+            text: "Polishing your prompt, one moment… (no action needed)",
+            delivery,
           })
         } catch {
           // progress is best-effort; the result still follows
+        }
+        try {
+          if (typeof ctx.session.interrupt === "function") {
+            await ctx.session.interrupt({ sessionID })
+          }
+        } catch {
+          // same: best-effort
         }
         try {
           // Reload config on every invocation for hot-reload
