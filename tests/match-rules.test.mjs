@@ -10,6 +10,7 @@ import {
   matchRules,
   looksLikeAnswer,
   looksLikeLeak,
+  cleanThinking,
   stripJsoncComments,
   extractText,
   extractLatestAssistantText,
@@ -296,6 +297,52 @@ for (const t of leakTests) {
     pass++
   } else {
     console.log(`FAIL  ${t.name}: expected ${t.expect}, got ${got}`)
+    fail++
+  }
+}
+
+console.log()
+console.log("--- cleanThinking (trace stripping) ---")
+const thinkTests = [
+  {
+    name: "paired thinking tags removed, rewrite kept",
+    text: "[thinking]\nLet me think about this.\n[/thinking]\nTell me the lyrics.",
+    expected: "Tell me the lyrics.",
+  },
+  {
+    name: "square-bracket variant (observed 2026-10-02)",
+    text: "[thinking]\nLet me re-read the instructions.\n[/thinking]\nTell me the lyrics.",
+    expected: "Tell me the lyrics.",
+  },
+  {
+    name: "think variant removed",
+    text: "<think>reasoning here</think>Just do it.",
+    expected: "Just do it.",
+  },
+  {
+    name: "dangling opener truncates",
+    text: "Partial rewrite <thinking>never closed",
+    expected: "Partial rewrite",
+  },
+  {
+    name: "no tags passthrough",
+    text: "Write a haiku about routers.",
+    expected: "Write a haiku about routers.",
+  },
+  {
+    name: "only trace yields empty",
+    text: "<thinking>all thought, no answer</thinking>",
+    expected: "",
+  },
+]
+for (const t of thinkTests) {
+  const got = cleanThinking(t.text)
+  const ok = got === t.expected
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: expected ${JSON.stringify(t.expected)}, got ${JSON.stringify(got)}`)
     fail++
   }
 }

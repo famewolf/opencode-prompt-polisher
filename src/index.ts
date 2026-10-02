@@ -267,13 +267,31 @@ function normalizeResponse(response: any): any[] {
   return []
 }
 
+/**
+ * Strip model thinking traces from output. Some models wrap chain-of-thought
+ * in paired tags even when thinking is disabled server-side (observed
+ * 2026-10-02: a full trace leaked into a polish rewrite). Removes complete
+ * pairs with their content; a dangling opener truncates everything after it.
+ * Returns the trimmed remainder (possibly empty — callers treat that as no
+ * output and fall back to the original prompt).
+ */
+export function cleanThinking(text: string): string {
+  let out = text
+  // Angle and square variants, including mixed open/close (observed both).
+  out = out.replace(/[[<]thinking[\]>][\s\S]*?[[/<]\/thinking[\]>]/gi, "")
+  out = out.replace(/[[<]think[\]>][\s\S]*?[[/<]\/think[\]>]/gi, "")
+  const openIdx = out.search(/[[<]thinking[\]>]|[[<]think[\]>]/i)
+  if (openIdx >= 0) out = out.slice(0, openIdx)
+  return out.trim()
+}
+
 export function extractLatestAssistantText(messages: any[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     // V2 uses `type: "assistant"`; keep the legacy `role` fallback.
     const kind = m.type ?? m.role ?? m.info?.role
     if (kind === "assistant") {
-      const t = extractText(m)
+      const t = cleanThinking(extractText(m))
       if (t) return t
     }
   }
