@@ -10,6 +10,8 @@ import {
   matchRules,
   looksLikeAnswer,
   stripJsoncComments,
+  extractText,
+  extractLatestAssistantText,
 } from "../dist/index.js"
 
 const DEFAULT_CONFIG = {
@@ -227,6 +229,50 @@ for (const t of commentTests) {
     console.log(`FAIL  ${t.name}`)
     console.log(`      expected: ${JSON.stringify(t.parsed)}`)
     console.log(`      got:      ${JSON.stringify(parsed)}`)
+    fail++
+  }
+}
+
+console.log()
+console.log("--- extractV2 (message shapes) ---")
+const shapeTests = [
+  {
+    name: "V2 assistant content array found by latest",
+    run: () => extractLatestAssistantText([
+      { id: "u1", type: "user", text: "write a haiku", time: { created: 1 } },
+      { id: "a1", type: "assistant", agent: "polish", model: {}, content: [{ type: "text", text: "Write a haiku about routers." }], time: { created: 2 } },
+    ]),
+    expected: "Write a haiku about routers.",
+  },
+  {
+    name: "V2 text + reasoning parts join text only",
+    run: () => extractText({ type: "assistant", content: [{ type: "reasoning", text: "thinking" }, { type: "text", text: "A" }, { type: "text", text: "B" }] }),
+    expected: "A\nB",
+  },
+  {
+    name: "V2 user text string",
+    run: () => extractText({ id: "u1", type: "user", text: "hello", time: { created: 1 } }),
+    expected: "hello",
+  },
+  {
+    name: "legacy V1 parts shape still works",
+    run: () => extractText({ info: { role: "assistant" }, parts: [{ type: "text", text: "legacy" }] }),
+    expected: "legacy",
+  },
+  {
+    name: "empty assistant content yields null",
+    run: () => extractLatestAssistantText([{ type: "assistant", content: [] }]),
+    expected: null,
+  },
+]
+for (const t of shapeTests) {
+  const got = t.run()
+  const ok = got === t.expected
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: expected ${JSON.stringify(t.expected)}, got ${JSON.stringify(got)}`)
     fail++
   }
 }

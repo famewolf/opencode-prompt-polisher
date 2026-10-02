@@ -214,11 +214,17 @@ function extractContext(
   const recent = messages.slice(-maxMessages)
   const parts: string[] = []
   for (const msg of recent) {
-    const role = msg.role ?? msg.info?.role ?? "unknown"
-    if (role === "system") continue
+    // V2 messages discriminate on `type` ("user" | "assistant" | "system" | ...),
+    // not `role`. Legacy V1 shapes ({info:{role}}) still fall through below.
+    const kind = msg.type ?? msg.role ?? msg.info?.role ?? "unknown"
+    if (kind === "system") continue
     const text = extractText(msg)
     if (!text) continue
-    const label = role === "user" ? "User" : "Assistant"
+    const label =
+      kind === "user" ? "User"
+      : kind === "assistant" ? "Assistant"
+      : kind === "synthetic" ? "Note"
+      : String(kind)
     const truncated =
       text.length > maxChars ? text.slice(0, maxChars) + "..." : text
     parts.push(`[${label}]: ${truncated}`)
@@ -226,8 +232,20 @@ function extractContext(
   return parts.join("\n\n")
 }
 
-function extractText(msg: any): string {
-  if (typeof msg.content === "string") return msg.content
+export function extractText(msg: any): string {
+  // V2 user/synthetic messages carry a plain `text` string.
+  if (typeof msg.text === "string" && msg.text.trim()) return msg.text
+  // V2 assistant messages carry `content: [{type:"text", text}, ...]`.
+  const content = msg.content
+  if (Array.isArray(content)) {
+    return content
+      .filter((p: any) => p && p.type === "text" && typeof p.text === "string")
+      .map((p: any) => p.text as string)
+      .join("\n")
+      .trim()
+  }
+  if (typeof content === "string") return content
+  // Legacy fallbacks (V1 shapes).
   const parts = msg.parts ?? msg.info?.parts
   if (Array.isArray(parts)) {
     return parts
@@ -249,11 +267,12 @@ function normalizeResponse(response: any): any[] {
   return []
 }
 
-function extractLatestAssistantText(messages: any[]): string | null {
+export function extractLatestAssistantText(messages: any[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
-    const role = m.role ?? m.info?.role
-    if (role === "assistant") {
+    // V2 uses `type: "assistant"`; keep the legacy `role` fallback.
+    const kind = m.type ?? m.role ?? m.info?.role
+    if (kind === "assistant") {
       const t = extractText(m)
       if (t) return t
     }
