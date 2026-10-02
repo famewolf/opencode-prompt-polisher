@@ -11,6 +11,7 @@ import {
   looksLikeAnswer,
   looksLikeLeak,
   cleanThinking,
+  cleanFences,
   stripJsoncComments,
   extractText,
   extractLatestAssistantText,
@@ -338,6 +339,47 @@ const thinkTests = [
 ]
 for (const t of thinkTests) {
   const got = cleanThinking(t.text)
+  const ok = got === t.expected
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: expected ${JSON.stringify(t.expected)}, got ${JSON.stringify(got)}`)
+    fail++
+  }
+}
+
+console.log()
+console.log("--- cleanFences (fence stripping) ---")
+const fenceTests = [
+  {
+    name: "fenced one-line rewrite recovered (observed 2026-10-02)",
+    text: '``` What are the lyrics to the song "Happy Birthday"? ```',
+    expected: 'What are the lyrics to the song "Happy Birthday"?',
+  },
+  {
+    name: "fenced block with language tag",
+    text: "```text\nWrite a haiku about routers.\n```",
+    expected: "Write a haiku about routers.",
+  },
+  {
+    name: "no fences passthrough",
+    text: "Tell me the lyrics.",
+    expected: "Tell me the lyrics.",
+  },
+  {
+    name: "only fences yields empty",
+    text: "```\n```",
+    expected: "",
+  },
+  {
+    name: "inline single backticks stripped",
+    text: "Review the `foo` function.",
+    expected: "Review the foo function.",
+  },
+]
+for (const t of fenceTests) {
+  const got = cleanFences(t.text)
   const ok = got === t.expected
   if (ok) {
     console.log(`PASS  ${t.name}`)

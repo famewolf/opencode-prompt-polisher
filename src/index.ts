@@ -285,13 +285,28 @@ export function cleanThinking(text: string): string {
   return out.trim()
 }
 
-export function extractLatestAssistantText(messages: any[]): string | null {
+export /**
+ * Remove markdown code fences, keeping the inner content. Models often wrap
+ * an otherwise good rewrite in ``` fences despite instructions (observed
+ * 2026-10-02: a one-line rewrite rejected as "an answer" only because of
+ * fences). Stripping recovers it; the inner text still passes through the
+ * answer/leak guards downstream. Empty remainder means no usable output.
+ */
+export function cleanFences(text: string): string {
+  if (!text.includes("```")) return text
+  return text
+    .replace(/```[\w+-]*[ \t]*\r?\n?/g, "")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .trim()
+}
+
+function extractLatestAssistantText(messages: any[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     // V2 uses `type: "assistant"`; keep the legacy `role` fallback.
     const kind = m.type ?? m.role ?? m.info?.role
     if (kind === "assistant") {
-      const t = cleanThinking(extractText(m))
+      const t = cleanFences(cleanThinking(extractText(m)))
       if (t) return t
     }
   }
