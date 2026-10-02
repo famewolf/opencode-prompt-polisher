@@ -129,6 +129,7 @@ const answerTests = [
   { name: "I can help phrase", text: "I can help you with this task.", expect: true },
   { name: "希望对你有帮助", text: "希望对你有帮助！", expect: true },
   // Should NOT be detected as answer
+  { name: "rewrite starting with Here are", text: "Here are the words to the Happy Birthday song.", expect: false },
   { name: "plain rewrite", text: "Write a TypeScript login function with email/password validation, JWT-based session handling, and bcrypt password hashing.", expect: false },
   { name: "rewrite starting with action verb", text: "Implement a binary search function in TypeScript that returns the index of the target, or -1 if not found.", expect: false },
   { name: "short rewrite", text: "Fix the login bug", expect: false },

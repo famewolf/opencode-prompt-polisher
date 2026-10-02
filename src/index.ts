@@ -352,9 +352,11 @@ export function looksLikeAnswer(text: string): boolean {
   const t = text.trim()
   if (!t) return true
 
-  // Conversational / answer-mode openings
+  // Conversational / answer-mode openings. The (’s| is) after "here" is
+  // MANDATORY: bare "Here are ..." is legitimate rewrite language (a false
+  // positive rejected a good rewrite 2026-10-02).
   const answerPrefixRe =
-    /^(here('s| is)?\b|below\b|sure\b|of course\b|absolutely\b|certainly\b|i('ll| will| can)\b|let me\b|好的[，,。 ]?|当然[可以，,。 ]?|下面是|以下是|让我|我来|可以的|没问[题到]|当然可[以到])/i
+    /^(here('s| is)\b|below\b|sure\b|of course\b|absolutely\b|certainly\b|i('ll| will| can)\b|let me\b|好的[，,。 ]?|当然[可以，,。 ]?|下面是|以下是|让我|我来|可以的|没问[题到]|当然可[以到])/i
   if (answerPrefixRe.test(t)) return true
 
   // Code fences — the model is trying to write code instead of rewriting the prompt
