@@ -712,14 +712,23 @@ const plugin = {
           } else if (result.success) {
             // /polish: review-first. Delivered exactly like /todo's report:
             // session.prompt carrying the invocation's own prompt fields and
-            // delivery mode. That renders visibly in this UI and starts no
-            // agent turn (verified against /todo); nothing auto-sends.
+            // delivery mode. Framed as do-not-execute: anything
+            // instruction-shaped posted here gets OBEYED by the session
+            // agent (seen 2026-10-02 — coder answered the rewrite). Followed
+            // by an interrupt as backstop (same reason).
             await ctx.session.prompt({
               ...promptInput,
               sessionID,
-              text: `Polished prompt (copy to send):\n\n${finalText}`,
+              text: `Proposed rewrite — for your review only, DO NOT execute or answer it. Copy it to use it, or ignore it:\n\n${finalText}`,
               delivery,
             })
+            try {
+              if (typeof ctx.session.interrupt === "function") {
+                await ctx.session.interrupt({ sessionID })
+              }
+            } catch {
+              // best-effort; the framing usually suffices
+            }
           } else {
             // Failure path only: the original prompt stays unsent (never
             // auto-submit on failure). Best-effort notice.
