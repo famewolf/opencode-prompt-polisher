@@ -9,6 +9,7 @@
 import {
   matchRules,
   looksLikeAnswer,
+  looksLikeLeak,
   stripJsoncComments,
   extractText,
   extractLatestAssistantText,
@@ -273,6 +274,28 @@ for (const t of shapeTests) {
     pass++
   } else {
     console.log(`FAIL  ${t.name}: expected ${JSON.stringify(t.expected)}, got ${JSON.stringify(got)}`)
+    fail++
+  }
+}
+
+console.log()
+console.log("--- looksLikeLeak (protocol regurgitation) ---")
+const leakTests = [
+  { name: "findings path (observed 2026-10-02)", text: "Findings: /tmp/opencode/happy_birthday_findings.md", expect: true },
+  { name: "bare tmp path", text: "see /tmp/opencode/foo_findings.md for details", expect: true },
+  { name: "TASK COMPLETE marker", text: "Done.\nTASK COMPLETE", expect: true },
+  { name: "tool JSON", text: '{"todos": [{"content": "x", "status": "pending"}]}', expect: true },
+  { name: "clean rewrite passes", text: "Write a haiku about routers, 5-7-5, concrete imagery.", expect: false },
+  { name: "prompt mentioning tmp legitimately", text: "Explain what the /tmp directory is for on Linux.", expect: false },
+]
+for (const t of leakTests) {
+  const got = looksLikeLeak(t.text)
+  const ok = got === t.expect
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: expected ${t.expect}, got ${got}`)
     fail++
   }
 }

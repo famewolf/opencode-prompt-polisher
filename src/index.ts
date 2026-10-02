@@ -352,6 +352,24 @@ export function looksLikeAnswer(text: string): boolean {
   return false
 }
 
+/**
+ * Detect session-protocol leakage: the polish model echoing harness artifacts
+ * (findings-file lines, task markers, tool JSON) instead of rewriting the
+ * prompt. Observed 2026-10-02: context saturated with `/tmp/opencode/*`
+ * chatter led small-model to emit "Findings: /tmp/opencode/....md" as the
+ * "rewrite". Returns true when the output looks like protocol, not a prompt.
+ */
+export function looksLikeLeak(text: string): boolean {
+  const t = text.trim()
+  if (!t) return true
+  if (/\/tmp\/opencode\//i.test(t)) return true
+  if (/^findings:/im.test(t)) return true
+  if (/TASK COMPLETE/i.test(t)) return true
+  if (/"todos"\s*:/.test(t)) return true
+  if (/^```/m.test(t)) return true
+  return false
+}
+
 // --- User message construction ---
 
 function buildUserMessage(
@@ -377,7 +395,7 @@ function buildUserMessage(
   }
 
   sections.push(
-    `Rewrite the prompt inside <raw_prompt> tags. Output ONLY the rewritten version — nothing else.`,
+    `Rewrite the prompt inside <raw_prompt> tags. Output ONLY the rewritten version — nothing else. Do not output file paths, task lists, checklists, status reports, or tool calls — only the rewritten prompt text.`,
   )
 
   return sections.join("\n\n---\n\n")
@@ -469,6 +487,10 @@ async function polishViaSDK(
 
     if (looksLikeAnswer(result)) {
       return { text: original, success: false, error: "Model produced an answer instead of a rewrite. Try again or rephrase the prompt." }
+    }
+
+    if (looksLikeLeak(result)) {
+      return { text: original, success: false, error: "Model echoed session protocol instead of rewriting. Try again (a less noisy session helps) or rephrase the prompt." }
     }
 
     return { text: result, success: true }
