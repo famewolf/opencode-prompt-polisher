@@ -600,7 +600,7 @@ const plugin = {
             await ctx.session.synthetic({
               sessionID,
               text: `Polish busy: ${autoSend ? "/polish-send" : "/polish"} is already running, please wait.`,
-              delivery: "steer",
+              delivery: "queue",
               resume: false,
             })
           } catch {
@@ -618,7 +618,7 @@ const plugin = {
           await ctx.session.synthetic({
             sessionID,
             text: "Polishing your prompt, one moment…",
-            delivery: "steer",
+            delivery: "queue",
             resume: false,
           })
         } catch {
@@ -674,7 +674,7 @@ const plugin = {
                 text: result.success
                   ? `Polished prompt (copy to send):\n\n${finalText}`
                   : `Polish failed: ${result.error}\n\nOriginal prompt:\n\n${original}`,
-                delivery: "steer",
+                delivery: "queue",
                 resume: false,
               })
             } catch {
@@ -696,7 +696,7 @@ const plugin = {
             await ctx.session.synthetic({
               sessionID,
               text: "Usage: /polish <prompt>\n\nExample: /polish 帮我写个函数",
-              delivery: "steer",
+              delivery: "queue",
               resume: false,
             })
             return
@@ -715,7 +715,7 @@ const plugin = {
             await ctx.session.synthetic({
               sessionID,
               text: "Usage: /polish-send <prompt>\n\nExample: /polish-send 帮我写个函数",
-              delivery: "steer",
+              delivery: "queue",
               resume: false,
             })
             return
