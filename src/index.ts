@@ -608,6 +608,17 @@ const plugin = {
           return
         }
         isPolishing = true
+        // Stop any redundant agent turn on the raw slash text: in some
+        // clients the message ALSO reaches the agent as a task, which burns
+        // minutes of GPU behind the polish call and buries the result. The
+        // command owns this turn. Best-effort: never blocks the polish.
+        try {
+          if (typeof ctx.session.interrupt === "function") {
+            await ctx.session.interrupt({ sessionID })
+          }
+        } catch {
+          // no agent turn running, or interrupt unsupported — proceed
+        }
         // Progress notice FIRST so slow models never leave the user staring
         // at nothing. Plain queue delivery: steer-style messages land
         // server-side but never render, and the resume flag breaks the call
@@ -660,11 +671,20 @@ const plugin = {
               text: finalText,
               delivery,
             })
+          } else if (result.success) {
+            // /polish: submit the polished prompt as a regular user message.
+            // This is the doc-canonical command pattern AND the only delivery
+            // that reliably renders: synthetic notices land server-side but
+            // the composer UI does not always display them (seen 2026-10-02).
+            await ctx.session.prompt({
+              sessionID,
+              text: finalText,
+              delivery,
+            })
           } else {
-            // /polish: surface the polished prompt without sending. V2 has
-            // no TUI prompt-box API in the core plugin context, so the result
-            // is delivered as a synthetic message in the session — the user
-            // copies it from there (or uses /polish-send).
+            // Failure path only: the original prompt stays unsent (never
+            // auto-submit on failure). Best-effort notice; delivery as a
+            // synthetic so a dead rewrite can't start an agent turn.
             try {
               await ctx.session.synthetic({
                 sessionID,
@@ -685,7 +705,7 @@ const plugin = {
       editor.add({
         name: "polish",
         description:
-          "AI-optimize your prompt using conversation context. Result is delivered in-session without auto-sending.",
+          "AI-optimize your prompt using conversation context, then submit the rewritten prompt.",
         execute: async ({ sessionID, prompt, delivery }: any) => {
           const original = (prompt?.text || "").trim()
           if (!original) {
