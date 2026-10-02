@@ -499,6 +499,19 @@ async function polishViaSDK(
     }
 
     const result = extractLatestAssistantText(messages)
+
+    // Best-effort: remove the scratch compartment so it never litters the
+    // sidebar or confuses anyone into looking for the answer there. The
+    // rewrite (if any) is already extracted above; the deliverable always
+    // goes to the invoking session as a synthetic message.
+    try {
+      if (typeof ctx.session.remove === "function") {
+        await ctx.session.remove({ sessionID: childId })
+      }
+    } catch {
+      // Leave the compartment behind; harmless.
+    }
+
     if (!result) {
       return { text: original, success: false, error: "No output from model" }
     }
