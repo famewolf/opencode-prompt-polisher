@@ -1,12 +1,11 @@
-import type { Plugin } from "@opencode-ai/plugin"
+import { Plugin } from "@opencode/plugin"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2/client"
 
 /** Module-level mutex: prevents concurrent /polish invocations from racing
- * on TUI prompt/submit operations (which would result in duplicate sends
- * or prompt text being overwritten mid-flight). */
+ * on session prompt operations (which would result in duplicate sends or
+ * context being read mid-flight). */
 let isPolishing = false
 
 // --- Config ---
@@ -57,7 +56,8 @@ function loadConfig(): PolishConfig {
           model: parsed.model ?? DEFAULT_CONFIG.model,
           context: {
             maxMessages:
-              parsed.context?.maxMessages ?? DEFAULT_CONFIG.context.maxMessages,
+              parsed.context?.maxMessages ??
+              DEFAULT_CONFIG.context.maxMessages,
             maxCharsPerMessage:
               parsed.context?.maxCharsPerMessage ??
               DEFAULT_CONFIG.context.maxCharsPerMessage,
@@ -139,6 +139,8 @@ interface ModelRef {
   modelID: string
 }
 
+/** Parse "provider/model-id" into a V2 model ref. Any provider id is valid —
+ * e.g. "opencode/deepseek-v4-flash-free" or a local "llama-server/small-model". */
 function parseModel(model: string): ModelRef | null {
   const idx = model.indexOf("/")
   if (idx < 1) return null
@@ -151,28 +153,6 @@ function parseModel(model: string): ModelRef | null {
 // --- System prompt ---
 
 const POLISH_AGENT = "polish"
-
-// V2 SDK hard-constraint schema. Server creates a virtual `StructuredOutput` tool
-// using this as `inputSchema`, sets `tool_choice: "required"` at the provider API
-// layer, validates the tool call arguments against this schema, and retries on
-// failure up to `retryCount` times. The validated object is returned via
-// `info.structured` on the assistant message.
-//
-// We force the model to wrap its output in { "rewritten": "..." } so the
-// rewrite is structurally separated from any preamble/analysis — the only
-// field on the result that the plugin reads is `rewritten`.
-const POLISH_JSON_SCHEMA = {
-  type: "object",
-  properties: {
-    rewritten: {
-      type: "string",
-      description:
-        "The optimized prompt — ONLY the rewritten text, no preamble, no analysis, no quotes, no markdown.",
-    },
-  },
-  required: ["rewritten"],
-  additionalProperties: false,
-} as const
 
 const POLISH_SYSTEM_PROMPT = `You are a text transformation function, not an AI assistant.
 
@@ -385,13 +365,27 @@ function buildUserMessage(
   return sections.join("\n\n---\n\n")
 }
 
-// --- LLM call via OpenCode SDK ---
+// --- LLM call via the V2 plugin context ---
 
 type PolishResult = { text: string; success: boolean; error?: string }
 
 /**
- * Orchestrator: try V2 (hard JSON constraint) first, fall back to V1 (soft).
- * Receives the plugin `ctx` so it can build a V2 client against `ctx.serverUrl`.
+ * V2 port: the plugin context IS the server client, so no separate client
+ * construction is needed. The flow is a single child session ("polish
+ * compartment"):
+ *
+ *   1. session.create  — hidden child session with the polish agent + config
+ *                        model and a tool-less permission deny-list
+ *   2. session.prompt  — the user message (raw prompt + context + rules)
+ *   3. session.wait    — block until the agent finishes
+ *   4. session.context — read messages; the latest assistant text IS the
+ *                        rewritten prompt (the V1 hard-JSON schema field
+ *                        was a V1-SDK-era API and is not part of the V2
+ *                        prompt input, so extraction is from plain text)
+ *
+ * The hidden polish agent enforces the no-tools behavior (V2 agents have no
+ * `tools: {}` key — capability denial happens via `permissions` deny rules
+ * and `steps: 1`, which also bounds the agent loop to a single model call).
  */
 async function polishViaSDK(
   ctx: any,
@@ -407,158 +401,52 @@ async function polishViaSDK(
   }
 
   const userMsg = buildUserMessage(original, context, config)
-  const v1Client: any = ctx.client
 
-  // ── Path A: V2 SDK + format: json_schema (hard constraint) ──
   try {
-    return await polishViaV2(ctx, parentSessionId, sessionDirectory, userMsg, modelRef, original)
-  } catch (v2Err: any) {
-    const v2Msg = v2Err?.message || String(v2Err)
-    // V2 unavailable (server too old / no tool calling support / etc.) — fall back
-    return await polishViaV1(v1Client, parentSessionId, sessionDirectory, userMsg, modelRef, original, v2Msg)
-  }
-}
-
-/**
- * V2 path: server enforces JSON via virtual `StructuredOutput` tool + tool_choice:required.
- * The validated object is read directly from `info.structured` — no parsing needed.
- */
-async function polishViaV2(
-  ctx: any,
-  parentSessionId: string,
-  sessionDirectory: string | undefined,
-  userMsg: string,
-  modelRef: ModelRef,
-  original: string,
-): Promise<PolishResult> {
-  const v2 = createOpencodeClient({ baseUrl: ctx.serverUrl.href })
-
-  // 1. Create child session (top-level params, no body/query wrappers)
-  const createResp = await v2.session.create({
-    parentID: parentSessionId,
-    title: "polish-compartment",
-    ...(sessionDirectory ? { directory: sessionDirectory } : {}),
-  })
-  const childId: string | undefined = createResp?.data?.id
-  if (!childId || typeof childId !== "string") {
-    throw new Error("v2: failed to create child session")
-  }
-
-  // 2. Send prompt with hard JSON constraint
-  const promptResp = await v2.session.prompt({
-    sessionID: childId,
-    agent: POLISH_AGENT,
-    model: { providerID: modelRef.providerID, modelID: modelRef.modelID },
-    parts: [{ type: "text", text: userMsg, synthetic: true }],
-    format: {
-      type: "json_schema",
-      schema: POLISH_JSON_SCHEMA,
-      retryCount: 3,
-    },
-    ...(sessionDirectory ? { directory: sessionDirectory } : {}),
-  })
-
-  // 3. Surface API errors (e.g. Insufficient balance)
-  const info: any = promptResp?.data?.info
-  if (info?.error) {
-    const apiError = info.error
-    throw new Error(`Model error: ${apiError.message || apiError.name || "unknown"}`)
-  }
-
-  // 4. Read validated structured output (server has already verified against schema)
-  const rewritten = (info?.structured as { rewritten?: unknown } | undefined)?.rewritten
-  if (typeof rewritten === "string" && rewritten.trim()) {
-    return { text: rewritten.trim(), success: true }
-  }
-
-  // No structured output (very rare — model produced nothing usable)
-  throw new Error("v2: info.structured.rewritten missing or empty")
-}
-
-/**
- * V1 path: v0.1.6 soft-constraint logic. Used only when V2 fails.
- * Includes the full extraction pipeline: promptResp → messages() → looksLikeAnswer.
- */
-async function polishViaV1(
-  client: any,
-  parentSessionId: string,
-  sessionDirectory: string | undefined,
-  userMsg: string,
-  modelRef: ModelRef,
-  original: string,
-  v2ErrorMsg: string,
-): Promise<PolishResult> {
-  try {
-    // 1. Create child session
-    const createResp = await client.session.create({
-      body: {
-        parentID: parentSessionId,
-        title: "polish-compartment",
+    // 1. Create the polish compartment (child session, hidden agent, config model)
+    const createResp: any = await ctx.session.create({
+      parentID: parentSessionId,
+      title: "polish-compartment",
+      agent: POLISH_AGENT,
+      model: {
+        providerID: modelRef.providerID,
+        id: modelRef.modelID,
       },
-      ...(sessionDirectory ? { query: { directory: sessionDirectory } } : {}),
+      permissions: POLISH_PERMISSIONS,
+      ...(sessionDirectory ? { location: { directory: sessionDirectory } } : {}),
     })
-
-    const childSession =
-      typeof createResp?.data === "object"
-        ? createResp.data
-        : Array.isArray(createResp)
-          ? createResp
-          : createResp
-    const childId = childSession?.id
+    const childId: string | undefined = createResp?.id
     if (!childId || typeof childId !== "string") {
       return { text: original, success: false, error: "Failed to create child session" }
     }
 
-    // 2. Send prompt (no format field — soft constraint via system prompt)
-    const promptResp = await client.session.prompt({
-      path: { id: childId },
-      ...(sessionDirectory ? { query: { directory: sessionDirectory } } : {}),
-      body: {
-        agent: POLISH_AGENT,
-        model: modelRef,
-        parts: [
-          { type: "text", text: userMsg, synthetic: true },
-        ],
-      },
+    // 2. Send the prompt (soft constraint via system prompt — the V2 prompt
+    //    input has no format/structured field, so the model answers in text)
+    const promptResp: any = await ctx.session.prompt({
+      sessionID: childId,
+      text: userMsg,
+      delivery: "queue",
     })
-
-    // 3. Check prompt response for model errors
-    if (promptResp?.data?.info?.error) {
-      const apiError = promptResp.data.info.error
-      const msg = apiError.message || apiError.name || "Unknown model error"
-      return { text: original, success: false, error: `Model error: ${msg}` }
+    if (promptResp?.error) {
+      return { text: original, success: false, error: `Model error: ${promptResp.error.message || promptResp.error.name || "unknown"}` }
     }
 
-    // 4. Try extracting text from prompt response directly
-    if (promptResp?.data) {
-      const text = extractLatestAssistantText([{ info: promptResp.data.info, parts: promptResp.data.parts }])
-      if (text) {
-        if (looksLikeAnswer(text)) {
-          return { text: original, success: false, error: "Model produced an answer instead of a rewrite. Try again or rephrase the prompt." }
-        }
-        return { text, success: true }
-      }
-    }
+    // 3. Wait for the agent to finish, then read the session context
+    await ctx.session.wait({ sessionID: childId })
+    const messages = normalizeResponse(await ctx.session.context({ sessionID: childId }))
 
-    // 5. Fallback: read messages from child session
-    const messagesResponse = await client.session.messages({
-      path: { id: childId },
-      ...(sessionDirectory ? { query: { directory: sessionDirectory, limit: 50 } } : { query: { limit: 50 } }),
-    })
-
-    const messages = normalizeResponse(messagesResponse)
-
+    // 4. Surface any model error recorded on the assistant message
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]?.info?.role === "assistant" && messages[i]?.info?.error) {
-        const apiError = messages[i].info.error
-        const msg = apiError.message || apiError.name || "Unknown model error"
-        return { text: original, success: false, error: `Model error: ${msg}` }
+      const m: any = messages[i]
+      if (m?.type === "assistant" && m.error) {
+        const apiError = m.error
+        return { text: original, success: false, error: `Model error: ${apiError.message || apiError.name || "unknown"}` }
       }
     }
 
     const result = extractLatestAssistantText(messages)
     if (!result) {
-      return { text: original, success: false, error: `No output from model (v2 path failed: ${v2ErrorMsg})` }
+      return { text: original, success: false, error: "No output from model" }
     }
 
     if (looksLikeAnswer(result)) {
@@ -568,85 +456,89 @@ async function polishViaV1(
     return { text: result, success: true }
   } catch (err: any) {
     const msg = err?.message || String(err)
-    return { text: original, success: false, error: `SDK error: ${msg} (v2 path failed: ${v2ErrorMsg})` }
+    return { text: original, success: false, error: `SDK error: ${msg}` }
   }
 }
 
-// --- Plugin ---
+// --- Plugin (V2) ---
 
-const server: Plugin = async (ctx) => {
+const POLISH_PERMISSIONS = [
+  // Permission deny-list. OpenCode requires explicit per-capability entries —
+  // there is no wildcard, so any new permission type added in a future
+  // OpenCode version will default to "allow" for this subagent until added
+  // below. Known as of OpenCode 2.x: edit, bash, webfetch, doom_loop,
+  // external_directory. When upgrading, audit the permission list and extend.
+  { action: "edit", resource: "*", effect: "deny" as const },
+  { action: "bash", resource: "*", effect: "deny" as const },
+  { action: "webfetch", resource: "*", effect: "deny" as const },
+  { action: "doom_loop", resource: "*", effect: "deny" as const },
+  { action: "external_directory", resource: "*", effect: "deny" as const },
+]
 
-  return {
-    config: async (cfg) => {
-      cfg.command ??= {}
-      cfg.command["polish"] = {
-        template: "<prompt>",
-        description: "AI-optimize your prompt using conversation context. Result fills the input box without auto-sending.",
-      }
-      cfg.command["polish-send"] = {
-        template: "<prompt>",
-        description: "AI-optimize your prompt using conversation context. Result fills and auto-submits.",
-      }
-      // Register polish agent: hidden subagent with no tools, max 1 step
-      cfg.agent ??= {}
-      cfg.agent[POLISH_AGENT] = {
-        prompt: POLISH_SYSTEM_PROMPT,
-        tools: {},
-        maxSteps: 1,
-        // Permission deny-list. OpenCode's plugin permission system requires
-        // explicit per-capability entries — there is no wildcard, so any
-        // new permission type added in a future OpenCode version will
-        // default to "allow" for this subagent until added below.
-        // Known as of OpenCode 1.x: edit, bash, webfetch, doom_loop,
-        // external_directory. When upgrading, audit OpenCode's permission
-        // type list and extend this map.
-        permission: {
-          edit: "deny",
-          bash: "deny",
-          webfetch: "deny",
-          doom_loop: "deny",
-          external_directory: "deny",
-        },
-        mode: "subagent",
-        hidden: true,
-      }
-    },
+export default Plugin.define({
+  id: "prompt-polisher",
+  async setup(ctx: any) {
+    const denyAll = POLISH_PERMISSIONS
 
-    "command.execute.before": async (input, output) => {
-      // Shared polish logic
-      const runPolish = async (original: string, autoSend: boolean) => {
+    // ── Polish agent: hidden subagent, no tools, single step ──
+    // V2 registers agents through a transform editor (there is no `config`
+    // hook anymore). The editor can only update/remove agents that exist, so
+    // we ensure the `polish` agent is present by also documenting the
+    // config-file registration below (see README). When the agent is not
+    // present in the config, the command still works: the child session is
+    // created with the model directly and a text-only prompt.
+    const registerPolishAgent = async () => {
+      await ctx.agent.transform((editor: any) => {
+        const existing = editor.get(POLISH_AGENT)
+        if (existing) {
+          editor.update(POLISH_AGENT, (agent: any) => {
+            agent.name = "Polish"
+            agent.system = POLISH_SYSTEM_PROMPT
+            agent.mode = "subagent"
+            agent.hidden = true
+            agent.steps = 1
+            agent.description =
+              "Hidden helper: rewrites user prompts into stronger versions. No tools, one step."
+            agent.permissions = denyAll
+          })
+        }
+      })
+    }
+    await registerPolishAgent()
+
+    // ── Commands ──
+    await ctx.command.transform((editor: any) => {
+      const runPolish = async (
+        sessionID: string,
+        original: string,
+        autoSend: boolean,
+        delivery: "steer" | "queue",
+      ) => {
         if (isPolishing) {
+          // V2 has no TUI toast API in the core plugin context — surface the
+          // busy state as a synthetic message in the session instead.
           try {
-            await ctx.client.tui.showToast({
-              body: {
-                title: "Polish Busy",
-                message: "Already polishing, please wait.",
-                variant: "error",
-                duration: 3000,
-              },
+            await ctx.session.synthetic({
+              sessionID,
+              text: `Polish busy: ${autoSend ? "/polish-send" : "/polish"} is already running, please wait.`,
+              delivery: "queue",
             })
           } catch {
-            // TUI may be unavailable — silently bail
+            // no-op
           }
           return
         }
         isPolishing = true
-        // Reload config on every invocation for hot-reload
-        const config = loadConfig()
         try {
-          // Show loading state
-          await ctx.client.tui.clearPrompt({})
-          await ctx.client.tui.appendPrompt({
-            body: { text: "⏳ 正在优化提示词..." },
-          })
+          // Reload config on every invocation for hot-reload
+          const config = loadConfig()
 
-          // Fetch conversation context
+          // Fetch conversation context from the parent session
           let context = ""
           try {
-            const resp = await ctx.client.session.messages({
-              path: { id: input.sessionID },
-            })
-            const msgs = normalizeResponse(resp)
+            const msgs = normalizeResponse(
+              await ctx.session.context({ sessionID }),
+            )
             if (Array.isArray(msgs) && msgs.length > 0) {
               context = extractContext(
                 msgs,
@@ -658,82 +550,81 @@ const server: Plugin = async (ctx) => {
             // no context — polish without it
           }
 
-          // Polish via OpenCode SDK (V2 first, V1 fallback)
           const result = await polishViaSDK(
             ctx,
-            input.sessionID,
-            undefined,
+            sessionID,
+            ctx.location?.directory,
             original,
             context,
             config,
           )
 
-          // Put result in input box
           const finalText = result.success ? result.text : original
 
-          await ctx.client.tui.clearPrompt({})
-          await ctx.client.tui.appendPrompt({ body: { text: finalText } })
-
           if (autoSend) {
-            await ctx.client.tui.submitPrompt({})
-          } else if (result.success) {
-            await ctx.client.tui.showToast({
-              body: {
-                title: "Polish Ready",
-                message: "Optimized prompt loaded. Press Enter to send, or edit first.",
-                variant: "info",
-                duration: 3000,
-              },
+            // /polish-send: submit the polished prompt in the current session
+            await ctx.session.prompt({
+              sessionID,
+              text: finalText,
+              delivery,
             })
           } else {
-            await ctx.client.tui.showToast({
-              body: {
-                title: "Polish Failed",
-                message: result.error || "Could not optimize prompt, loaded original instead.",
-                variant: "error",
-                duration: 5000,
-              },
-            })
-          }
-        } catch (err) {
-          // Fallback: load original into input box
-          try {
-            await ctx.client.tui.clearPrompt({})
-            await ctx.client.tui.appendPrompt({ body: { text: original } })
-            if (autoSend) await ctx.client.tui.submitPrompt({})
-          } catch {
-            // Last resort
+            // /polish: surface the polished prompt without sending. V2 has
+            // no TUI prompt-box API in the core plugin context, so the result
+            // is delivered as a synthetic message in the session — the user
+            // copies it from there (or uses /polish-send).
+            try {
+              await ctx.session.synthetic({
+                sessionID,
+                text: result.success
+                  ? `Polished prompt (copy to send):\n\n${finalText}`
+                  : `Polish failed: ${result.error}\n\nOriginal prompt:\n\n${original}`,
+                delivery: "queue",
+              })
+            } catch {
+              // Last resort — the original prompt is still in the session
+            }
           }
         } finally {
           isPolishing = false
         }
       }
 
-      // --- /polish ---
-      if (input.command === "polish") {
-        const original = (input.arguments || "").trim()
-        if (!original) {
-          throw new Error(
-            "Usage: /polish <prompt>\n\nExample: /polish 帮我写个函数",
-          )
-        }
-        runPolish(original, false)
-        throw new Error("__POLISH_HANDLED__")
-      }
+      editor.add({
+        name: "polish",
+        description:
+          "AI-optimize your prompt using conversation context. Result is delivered in-session without auto-sending.",
+        execute: async ({ sessionID, prompt, delivery }: any) => {
+          const original = (prompt?.text || "").trim()
+          if (!original) {
+            await ctx.session.synthetic({
+              sessionID,
+              text: "Usage: /polish <prompt>\n\nExample: /polish 帮我写个函数",
+              delivery: "queue",
+            })
+            return
+          }
+          await runPolish(sessionID, original, false, delivery)
+        },
+      })
 
-      // --- /polish-send ---
-      if (input.command === "polish-send") {
-        const original = (input.arguments || "").trim()
-        if (!original) {
-          throw new Error(
-            "Usage: /polish-send <prompt>\n\nExample: /polish-send 帮我写个函数",
-          )
-        }
-        runPolish(original, true)
-        throw new Error("__POLISH_HANDLED__")
-      }
-    },
-  }
-}
-
-export default server
+      editor.add({
+        name: "polish-send",
+        description:
+          "AI-optimize your prompt using conversation context. Result is submitted automatically.",
+        execute: async ({ sessionID, prompt, delivery }: any) => {
+          const original = (prompt?.text || "").trim()
+          if (!original) {
+            await ctx.session.synthetic({
+              sessionID,
+              text: "Usage: /polish-send <prompt>\n\nExample: /polish-send 帮我写个函数",
+              delivery: "queue",
+            })
+            return
+          }
+          await runPolish(sessionID, original, true, delivery)
+        },
+      })
+    })
+  },
+}) as any
