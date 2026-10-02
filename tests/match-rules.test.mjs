@@ -12,6 +12,7 @@ import {
   looksLikeLeak,
   cleanThinking,
   cleanFences,
+  cleanWrapperTags,
   stripJsoncComments,
   extractText,
   extractLatestAssistantText,
@@ -380,6 +381,37 @@ const fenceTests = [
 ]
 for (const t of fenceTests) {
   const got = cleanFences(t.text)
+  const ok = got === t.expected
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: expected ${JSON.stringify(t.expected)}, got ${JSON.stringify(got)}`)
+    fail++
+  }
+}
+
+console.log()
+console.log("--- cleanWrapperTags (framing echo) ---")
+const wrapperTests = [
+  {
+    name: "raw_prompt tags stripped (observed 2026-10-02)",
+    text: '<raw_prompt>\nPlease provide the complete lyrics.\n</raw_prompt>',
+    expected: "Please provide the complete lyrics.",
+  },
+  {
+    name: "case-insensitive close tag",
+    text: "<RAW_PROMPT>Do the thing.</RAW_PROMPT>",
+    expected: "Do the thing.",
+  },
+  {
+    name: "no tags passthrough",
+    text: "Tell me the lyrics.",
+    expected: "Tell me the lyrics.",
+  },
+]
+for (const t of wrapperTests) {
+  const got = cleanWrapperTags(t.text)
   const ok = got === t.expected
   if (ok) {
     console.log(`PASS  ${t.name}`)

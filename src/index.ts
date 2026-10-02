@@ -286,6 +286,17 @@ export function cleanThinking(text: string): string {
 }
 
 /**
+ * Strip the <raw_prompt> framing tags when the model echoes them into its
+ * output (observed 2026-10-02: rewrite wrapped in the boundary tags from the
+ * request). Case-insensitive; trims the remainder.
+ */
+export function cleanWrapperTags(text: string): string {
+  if (!/raw_prompt/i.test(text)) return text
+  return text
+    .replace(/<\/?raw_prompt>/gi, "")
+    .trim()
+}
+/**
  * Remove markdown code fences, keeping the inner content. Models often wrap
  * an otherwise good rewrite in ``` fences despite instructions (observed
  * 2026-10-02: a one-line rewrite rejected as "an answer" only because of
@@ -306,7 +317,7 @@ export function extractLatestAssistantText(messages: any[]): string | null {
     // V2 uses `type: "assistant"`; keep the legacy `role` fallback.
     const kind = m.type ?? m.role ?? m.info?.role
     if (kind === "assistant") {
-      const t = cleanFences(cleanThinking(extractText(m)))
+      const t = cleanWrapperTags(cleanFences(cleanThinking(extractText(m))))
       if (t) return t
     }
   }
