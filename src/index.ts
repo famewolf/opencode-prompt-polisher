@@ -592,6 +592,7 @@ const plugin = {
         original: string,
         autoSend: boolean,
         delivery: "steer" | "queue",
+        promptInput: any,
       ) => {
         if (isPolishing) {
           // V2 has no TUI toast API in the core plugin context — surface the
@@ -672,25 +673,23 @@ const plugin = {
               delivery,
             })
           } else if (result.success) {
-            // /polish: submit the polished prompt as a regular user message.
-            // This is the doc-canonical command pattern AND the only delivery
-            // that reliably renders: synthetic notices land server-side but
-            // the composer UI does not always display them (seen 2026-10-02).
+            // /polish: review-first. Delivered exactly like /todo's report:
+            // session.prompt carrying the invocation's own prompt fields and
+            // delivery mode. That renders visibly in this UI and starts no
+            // agent turn (verified against /todo); nothing auto-sends.
             await ctx.session.prompt({
+              ...promptInput,
               sessionID,
-              text: finalText,
+              text: `Polished prompt (copy to send):\n\n${finalText}`,
               delivery,
             })
           } else {
             // Failure path only: the original prompt stays unsent (never
-            // auto-submit on failure). Best-effort notice; delivery as a
-            // synthetic so a dead rewrite can't start an agent turn.
+            // auto-submit on failure). Best-effort notice.
             try {
               await ctx.session.synthetic({
                 sessionID,
-                text: result.success
-                  ? `Polished prompt (copy to send):\n\n${finalText}`
-                  : `Polish failed: ${result.error}\n\nOriginal prompt:\n\n${original}`,
+                text: `Polish failed: ${result.error}\n\nOriginal prompt:\n\n${original}`,
                 delivery: "queue",
               })
             } catch {
@@ -705,7 +704,7 @@ const plugin = {
       editor.add({
         name: "polish",
         description:
-          "AI-optimize your prompt using conversation context, then submit the rewritten prompt.",
+          "AI-optimize your prompt using conversation context. Shows the rewrite for review without sending.",
         execute: async ({ sessionID, prompt, delivery }: any) => {
           const original = (prompt?.text || "").trim()
           if (!original) {
@@ -716,7 +715,7 @@ const plugin = {
             })
             return
           }
-          await runPolish(sessionID, original, false, delivery)
+          await runPolish(sessionID, original, false, delivery, prompt)
         },
       })
 
@@ -734,7 +733,7 @@ const plugin = {
             })
             return
           }
-          await runPolish(sessionID, original, true, delivery)
+          await runPolish(sessionID, original, true, delivery, prompt)
         },
       })
     })
