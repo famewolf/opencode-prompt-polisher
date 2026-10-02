@@ -600,7 +600,8 @@ const plugin = {
             await ctx.session.synthetic({
               sessionID,
               text: `Polish busy: ${autoSend ? "/polish-send" : "/polish"} is already running, please wait.`,
-              delivery: "queue",
+              delivery: "steer",
+              resume: false,
             })
           } catch {
             // no-op
@@ -608,6 +609,21 @@ const plugin = {
           return
         }
         isPolishing = true
+        // Progress notice FIRST so slow models never leave the user staring
+        // at nothing. delivery "steer" + resume false: visible in context
+        // without waking the session agent (a "queue" notice would start a
+        // whole agent turn, which is exactly the runaway-coder churn seen
+        // 2026-10-02).
+        try {
+          await ctx.session.synthetic({
+            sessionID,
+            text: "Polishing your prompt, one moment…",
+            delivery: "steer",
+            resume: false,
+          })
+        } catch {
+          // progress is best-effort; the result still follows
+        }
         try {
           // Reload config on every invocation for hot-reload
           const config = loadConfig()
@@ -658,7 +674,8 @@ const plugin = {
                 text: result.success
                   ? `Polished prompt (copy to send):\n\n${finalText}`
                   : `Polish failed: ${result.error}\n\nOriginal prompt:\n\n${original}`,
-                delivery: "queue",
+                delivery: "steer",
+                resume: false,
               })
             } catch {
               // Last resort — the original prompt is still in the session
@@ -679,7 +696,8 @@ const plugin = {
             await ctx.session.synthetic({
               sessionID,
               text: "Usage: /polish <prompt>\n\nExample: /polish 帮我写个函数",
-              delivery: "queue",
+              delivery: "steer",
+              resume: false,
             })
             return
           }
@@ -697,7 +715,8 @@ const plugin = {
             await ctx.session.synthetic({
               sessionID,
               text: "Usage: /polish-send <prompt>\n\nExample: /polish-send 帮我写个函数",
-              delivery: "queue",
+              delivery: "steer",
+              resume: false,
             })
             return
           }
