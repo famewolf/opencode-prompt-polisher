@@ -592,6 +592,87 @@ type PolishResult = { text: string; success: boolean; error?: string }
  * `tools: {}` key — capability denial happens via `permissions` deny rules
  * and `steps: 1`, which also bounds the agent loop to a single model call).
  */
+/** Append one line to the plugin's diagnostic log. Never throws. */
+function logPolish(msg: string): void {
+  try {
+    appendFileSync(join("/tmp", "opencode", "polish_cleanup.log"), msg + "\n")
+  } catch {
+    // diagnostics must never break the plugin
+  }
+}
+
+/** Run the guards over a raw rewrite and shape the result.
+ *
+ *  Shared by both call paths (stateless generate and the legacy compartment) so
+ *  the acceptance criteria cannot drift between them.
+ */
+export function finishRewrite(original: string, raw: string | null): PolishResult {
+  const cleaned = raw ? cleanWrapperTags(cleanFences(cleanThinking(raw))) : ""
+  const result = cleaned.trim() ? cleaned : null
+  if (!result) {
+    return { text: original, success: false, error: "No output from model" }
+  }
+  if (looksLikeAnswer(result)) {
+    return { text: original, success: false, error: "Model produced an answer instead of a rewrite. Try again or rephrase the prompt." }
+  }
+  if (looksLikeLeak(result)) {
+    return { text: original, success: false, error: "Model echoed session protocol instead of rewriting. Try again (a less noisy session helps) or rephrase the prompt." }
+  }
+  if (looksDegenerate(result)) {
+    return { text: original, success: false, error: "Model output was degenerate (repetition loop) instead of a rewrite. Try rephrasing the prompt." }
+  }
+  return { text: result, success: true }
+}
+
+/**
+ * Stateless rewrite via ctx.generate.text.
+ *
+ * This is the path that fixes what the user actually saw. The compartment
+ * approach creates a real child session, so the rewrite model streams its
+ * output into a session that renders in the UI - a page of degenerate rambling
+ * appeared in front of the user before any guard could run, even with the
+ * degeneracy guard live. Nothing about the guards can help: they decide what is
+ * DELIVERED, not what is rendered while the model is still writing.
+ *
+ * ctx.generate.text is a plain POST to /api/experimental/generate with
+ * {prompt, model} (read out of the opencode binary's route table), so no
+ * session exists, nothing renders, and there is nothing to clean up.
+ */
+async function polishViaGenerate(
+  ctx: any,
+  modelRef: { providerID: string; modelID: string },
+  userMsg: string,
+  original: string,
+): Promise<PolishResult | null> {
+  const gen = ctx?.generate?.text
+  if (typeof gen !== "function") return null
+  try {
+    const resp: any = await gen({
+      prompt: userMsg,
+      model: { providerID: modelRef.providerID, id: modelRef.modelID },
+    })
+    if (resp?.error) {
+      logPolish(`GEN-ERR ${JSON.stringify(resp.error).slice(0, 200)}`)
+      return null
+    }
+    // The RPC layer unwraps to the handler's return value, which the binary
+    // shows as {text}. Tolerate the other plausible shapes rather than assume.
+    const raw =
+      typeof resp === "string"
+        ? resp
+        : resp?.text ?? resp?.data?.text ?? resp?.content ?? null
+    if (typeof raw !== "string" || !raw.trim()) {
+      logPolish(`GEN-SHAPE keys=${Object.keys(resp ?? {}).join(",") || typeof resp}`)
+      return null
+    }
+    logPolish(`GEN-OK ${raw.length} chars`)
+    return finishRewrite(original, raw)
+  } catch (err) {
+    logPolish(`GEN-THREW ${(err as Error)?.message ?? err}`)
+    return null
+  }
+}
+
 async function polishViaSDK(
   ctx: any,
   parentSessionId: string,
@@ -613,6 +694,11 @@ async function polishViaSDK(
   let compartmentId: string | undefined
 
   try {
+    // Stateless path first. If it works there is no scratch session at all:
+    // nothing renders, nothing streams, nothing needs deleting.
+    const generated = await polishViaGenerate(ctx, modelRef, userMsg, original)
+    if (generated) return generated
+
     // 1. Create the polish compartment (child session, hidden agent, config model)
     const createResp: any = await ctx.session.create({
       parentID: parentSessionId,
@@ -655,25 +741,8 @@ async function polishViaSDK(
       }
     }
 
-    const result = extractLatestAssistantText(messages)
-
-    if (!result) {
-      return { text: original, success: false, error: "No output from model" }
-    }
-
-    if (looksLikeAnswer(result)) {
-      return { text: original, success: false, error: "Model produced an answer instead of a rewrite. Try again or rephrase the prompt." }
-    }
-
-    if (looksLikeLeak(result)) {
-      return { text: original, success: false, error: "Model echoed session protocol instead of rewriting. Try again (a less noisy session helps) or rephrase the prompt." }
-    }
-
-    if (looksDegenerate(result)) {
-      return { text: original, success: false, error: "Model output was degenerate (repetition loop) instead of a rewrite. Try rephrasing the prompt." }
-    }
-
-    return { text: result, success: true }
+    // Same guards as the stateless path — shared so they cannot drift.
+    return finishRewrite(original, extractLatestAssistantText(messages))
   } catch (err: any) {
     const msg = err?.message || String(err)
     return { text: original, success: false, error: `SDK error: ${msg}` }

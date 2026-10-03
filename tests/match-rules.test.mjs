@@ -20,7 +20,15 @@ import {
   serverBaseUrls,
   serverAuthHeader,
   looksDegenerate,
+  finishRewrite,
 } from "../dist/index.js"
+
+// Declared up here: the finishRewrite cases below read the frozen fixture, and
+// a const declared further down would still be in its TDZ when they run.
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
+import { dirname as _dirname, join as _join } from "node:path"
+const HERE = _dirname(fileURLToPath(import.meta.url))
 
 const DEFAULT_CONFIG = {
   model: "",
@@ -571,11 +579,54 @@ for (const t of structuredWrapperTests) {
 }
 
 console.log()
+console.log("--- finishRewrite (the guard chain both call paths share) ---")
+const realLoopTxt = readFileSync(_join(HERE, "fixtures", "degenerate-monologue.txt"), "utf8")
+const chainTests = [
+  {
+    name: "a clean rewrite passes through sanitizers and succeeds",
+    raw: "```\nPlease sing the Happy Birthday song by outputting its lyrics.\n```",
+    check: (r) => r.success === true && r.text === "Please sing the Happy Birthday song by outputting its lyrics.",
+  },
+  {
+    name: "the Task/Constraints wrapper is stripped before the guards see it",
+    raw: "**Task:** Output the lyrics.\n\n**Rewritten Prompt:**\nPlease sing the Happy Birthday song.",
+    check: (r) => r.success === true && r.text === "Please sing the Happy Birthday song.",
+  },
+  {
+    name: "the real monologue is rejected and the ORIGINAL prompt is preserved",
+    raw: realLoopTxt,
+    check: (r) => r.success === false && r.text === "ORIGINAL" && /degenerate/.test(r.error || ""),
+  },
+  {
+    name: "empty output is rejected without touching the original",
+    raw: "   \n  ",
+    check: (r) => r.success === false && r.text === "ORIGINAL" && /No output/.test(r.error || ""),
+  },
+  {
+    name: "null output is rejected without throwing",
+    raw: null,
+    check: (r) => r.success === false && r.text === "ORIGINAL",
+  },
+  {
+    name: "session-protocol leakage is rejected",
+    raw: "Findings: /tmp/opencode/x_findings.md\n\nTASK COMPLETE",
+    check: (r) => r.success === false && r.text === "ORIGINAL",
+  },
+]
+for (const t of chainTests) {
+  const got = finishRewrite("ORIGINAL", t.raw)
+  const ok = t.check(got)
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: got ${JSON.stringify(got).slice(0, 200)}`)
+    fail++
+  }
+}
+
+console.log()
 console.log("--- looksDegenerate (repetition loop, observed 2026-10-02) ---")
-import { readFileSync } from "node:fs"
-import { fileURLToPath } from "node:url"
-import { dirname as _dirname, join as _join } from "node:path"
-const HERE = _dirname(fileURLToPath(import.meta.url))
 // The exact 12723-char output the model produced, frozen so the guard is
 // tested against the real transcript rather than a reconstruction of it.
 const realLoop = readFileSync(_join(HERE, "fixtures", "degenerate-monologue.txt"), "utf8")
