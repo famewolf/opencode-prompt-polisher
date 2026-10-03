@@ -17,6 +17,8 @@ import {
   extractText,
   extractLatestAssistantText,
   extractContext,
+  serverBaseUrls,
+  serverAuthHeader,
 } from "../dist/index.js"
 
 const DEFAULT_CONFIG = {
@@ -497,6 +499,77 @@ for (const t of contextTests) {
     t.maxMessages ?? 6,
     t.maxChars ?? 500,
   )
+  const ok = got === t.expected
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: expected ${JSON.stringify(t.expected)}, got ${JSON.stringify(got)}`)
+    fail++
+  }
+}
+
+console.log()
+console.log("--- serverBaseUrls (cleanup target discovery) ---")
+// The plugin must find the serve port itself; OpenChamber picks a random one
+// per restart and exports nothing. Parsing is asserted against a recorded real
+// cmdline rather than a mock shape.
+const baseUrlTests = [
+  {
+    name: "port and hostname parsed from a real serve cmdline",
+    cmdline: ["opencode", "serve", "--hostname", "127.0.0.1", "--port", "35043", ""].join("\0"),
+    expectHas: "http://127.0.0.1:35043",
+  },
+  {
+    name: "non-loopback hostname is preserved",
+    cmdline: ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096", ""].join("\0"),
+    expectHas: "http://0.0.0.0:4096",
+  },
+  {
+    name: "missing --hostname falls back to loopback",
+    cmdline: ["opencode", "serve", "--port", "4096", ""].join("\0"),
+    expectHas: "http://127.0.0.1:4096",
+  },
+  {
+    name: "trailing --port with no value yields no URL from the cmdline",
+    cmdline: ["opencode", "serve", "--port", ""].join("\0"),
+    expectHas: null,
+  },
+]
+for (const t of baseUrlTests) {
+  const got = serverBaseUrls({}, t.cmdline)
+  const ok = t.expectHas === null ? !got.some((u) => /\d{4,5}$/.test(u)) : got.includes(t.expectHas)
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: expected ${t.expectHas ?? "no port url"}, got ${JSON.stringify(got)}`)
+    fail++
+  }
+}
+
+console.log()
+console.log("--- serverAuthHeader (proved against live server 2026-10-02) ---")
+const authTests = [
+  {
+    name: "OPENCODE_SERVER_PASSWORD yields Basic base64(opencode:pw)",
+    env: { OPENCODE_SERVER_PASSWORD: "s3cret" },
+    expected: "Basic " + Buffer.from("opencode:s3cret").toString("base64"),
+  },
+  {
+    name: "OPENCODE_PASSWORD is the fallback",
+    env: { OPENCODE_PASSWORD: "fallbackpw" },
+    expected: "Basic " + Buffer.from("opencode:fallbackpw").toString("base64"),
+  },
+  {
+    name: "SERVER_PASSWORD wins over the generic name",
+    env: { OPENCODE_SERVER_PASSWORD: "primary", OPENCODE_PASSWORD: "secondary" },
+    expected: "Basic " + Buffer.from("opencode:primary").toString("base64"),
+  },
+  { name: "no credentials yields undefined", env: {}, expected: undefined },
+]
+for (const t of authTests) {
+  const got = serverAuthHeader(t.env)
   const ok = got === t.expected
   if (ok) {
     console.log(`PASS  ${t.name}`)

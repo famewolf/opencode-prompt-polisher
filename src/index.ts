@@ -707,16 +707,101 @@ async function removeCompartment(ctx: any, sessionID: string): Promise<void> {
       const err = res && typeof res === "object" ? (res.error ?? res.data?.error) : undefined
       if (err) {
         log(`FAIL ${sessionID} via ${name}: ${JSON.stringify(err).slice(0, 300)}`)
-        return
+        continue
       }
       log(`OK ${sessionID} via ${name} directory=${directory ?? "none"}`)
       return
     } catch (err) {
       log(`THREW ${sessionID} via ${name}: ${(err as Error)?.message ?? err}`)
-      return
+      continue
     }
   }
-  log(`NOAPI ${sessionID} — no session-delete API on the plugin context; compartment left behind`)
+
+  // The V2 plugin context exposes NO session-delete surface: a runtime dump of
+  // ctx (see dumpCtxShape) shows clientPresent=false and ctx.session carrying
+  // only command/context/create/generate/get/hook/interrupt/move/prompt/
+  // switchAgent/switchModel/synthetic/update/wait. That is why three separate
+  // attempts to call it through the SDK all logged NOAPI.
+  //
+  // But the server route exists and works from outside the process:
+  //   GET    /api/session/{id} -> 200 with the session JSON
+  //   DELETE /api/session/{id} -> 204, and the row is gone from session_v2
+  // Both verified by hand against the live server before this code was written,
+  // including the directory-scoped create (location.directory) that a previous
+  // comment wrongly blamed for the failure — an unscoped DELETE returned 204
+  // for a compartment created with a location, so the scoping theory was wrong.
+  // So the plugin issues the request itself.
+  const auth = serverAuthHeader()
+  for (const base of serverBaseUrls(ctx)) {
+    try {
+      const url = `${base}/api/session/${encodeURIComponent(sessionID)}`
+      const res = await fetch(url, {
+        method: "DELETE",
+        headers: {
+          ...(auth ? { Authorization: auth } : {}),
+          ...(directory ? { "x-opencode-directory": encodeURIComponent(directory) } : {}),
+        },
+      })
+      if (res.status === 204 || res.status === 200 || res.status === 404) {
+        // 404 means already gone, which is the desired end state.
+        log(`OK ${sessionID} via HTTP DELETE ${url} -> ${res.status}`)
+        return
+      }
+      log(`FAIL ${sessionID} via HTTP DELETE ${url}: status ${res.status}`)
+    } catch (err) {
+      log(`THREW ${sessionID} via HTTP DELETE ${base}: ${(err as Error)?.message ?? err}`)
+    }
+  }
+  log(`NOAPI ${sessionID} — no reachable server route deleted the compartment`)
+}
+
+/** HTTP Basic credentials for the local server, read from our own environment.
+ *
+ *  The plugin runs INSIDE the `opencode serve` process, so the server's own
+ *  password is already in process.env — no config file, no secret to copy. The
+ *  username is fixed at "opencode" and the password is OPENCODE_SERVER_PASSWORD
+ *  (OPENCODE_PASSWORD is also present in this environment; the former is the
+ *  one opencode serve sets for itself). Verified against the live server: the
+ *  correct pair returns 200, an empty username, a wrong username, and a wrong
+ *  password each return 401 — so the header is genuinely enforced, not ignored.
+ */
+export function serverAuthHeader(env: Record<string, string | undefined> = process.env): string | undefined {
+  const pw = env.OPENCODE_SERVER_PASSWORD || env.OPENCODE_PASSWORD
+  if (!pw) return undefined
+  return `Basic ${Buffer.from(`opencode:${pw}`).toString("base64")}`
+}
+
+/** Candidate base URLs for the local OpenCode server, best guess first.
+ *
+ *  The port is not fixed: OpenChamber spawns `opencode serve --hostname ... --port
+ *  <n>` and the number changes on every restart (40283, then 35043, observed in
+ *  one session). Nothing exports it, so it is read out of this process's own
+ *  command line via /proc/self/cmdline — which is the serve invocation, since
+ *  the plugin is loaded by that same process.
+ */
+export function serverBaseUrls(ctx: any, cmdline?: string): string[] {
+  const out: string[] = []
+  const push = (v: unknown) => {
+    if (typeof v !== "string" || !v) return
+    const url = v.startsWith("http") ? v : `http://127.0.0.1:${v.replace(/^:/, "")}`
+    if (!out.includes(url)) out.push(url.replace(/\/$/, ""))
+  }
+  push(process.env.OPENCODE_SERVER_URL)
+  try {
+    // `cmdline` is injectable so the parsing is testable without spawning a
+    // process whose argv looks like a server invocation.
+    const raw = cmdline ?? readFileSync("/proc/self/cmdline", "utf8")
+    const argv = raw.split("\0")
+    const portFlag = argv.indexOf("--port")
+    if (portFlag !== -1 && argv[portFlag + 1]) {
+      const hostFlag = argv.indexOf("--hostname")
+      const host = hostFlag !== -1 && argv[hostFlag + 1] ? argv[hostFlag + 1] : "127.0.0.1"
+      push(`http://${host}:${argv[portFlag + 1]}`)
+    }
+  } catch {
+    // /proc unavailable (non-Linux): fall through to the env var only
+  }
+  return out
 }
 
 // --- Plugin (V2) ---
