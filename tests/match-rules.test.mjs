@@ -505,6 +505,14 @@ const contextTests = [
     expected: "[User]: legacy ask",
   },
   {
+    name: "raw /polish invocations are not rewrite context",
+    messages: [
+      { type: "user", text: "/polish sing proud be an american" },
+      { type: "user", text: "sing proud to be an american" },
+    ],
+    expected: "[User]: sing proud to be an american",
+  },
+  {
     name: "a pasted /todo report is not rewrite context",
     messages: [
       { type: "user", text: "Todo [0/2] - 2 open\nCurrent task: Verify /todo\n  DOING 1. Verify /todo" },

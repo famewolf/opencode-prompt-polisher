@@ -260,6 +260,12 @@ export function extractContext(
     if (kind !== "user") continue
     const text = extractText(msg)
     if (!text) continue
+    // Raw `/polish` invocations are not rewrite input. Observed 2026-10-03:
+    // polishing "sing proud to be an american" returned "sing proud be an
+    // american" — a PREVIOUS polish attempt, echoed verbatim from history
+    // instead of rewritten. The command text steers nothing; it only offers
+    // itself up for copying.
+    if (/^\/(polish|polish-send)\b/i.test(text.trim())) continue
     if (looksLikeSessionDump(text)) continue
     const truncated =
       text.length > maxChars ? text.slice(0, maxChars) + "..." : text
