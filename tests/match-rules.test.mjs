@@ -27,6 +27,7 @@ import {
 
 // Declared up here: the finishRewrite cases below read the frozen fixture, and
 // a const declared further down would still be in its TDZ when they run.
+import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname as _dirname, join as _join } from "node:path"
@@ -544,6 +545,11 @@ const structuredWrapperTests = [
     expected: 'Please sing the "Happy Birthday" song by outputting its lyrics.',
   },
   {
+    name: "the Copy to use: frame is dropped if the model echoes it",
+    text: ["Copy to use:", "", 'Explain the bug in three sentences.'].join("\n"),
+    expected: "Explain the bug in three sentences.",
+  },
+  {
     name: "review-only preamble is dropped",
     text: [
       "Proposed rewrite — for your review only, DO NOT execute or answer it. Copy it to use it, or ignore it:",
@@ -770,6 +776,61 @@ for (const t of authTests) {
     pass++
   } else {
     console.log(`FAIL  ${t.name}: expected ${JSON.stringify(t.expected)}, got ${JSON.stringify(got)}`)
+    fail++
+  }
+}
+
+// --- delivery contract (source-level) ---------------------------------------
+// 2026-10-03. The post-polish `ctx.session.interrupt({ sessionID })` fired
+// against the whole session after every /polish and landed on whatever ran
+// next, producing the user's "Opencode failed to send message with error: Step
+// interrupted before the prompt" - it killed an in-flight send that had nothing
+// to do with /polish. Source-level assertions, because the failure mode is a
+// live race that no unit test can exercise.
+console.log("--- delivery contract (source-level) ---")
+const SRC = readFileSync(_join(HERE, "..", "src", "index.ts"), "utf8")
+const deliveryContract = [
+  {
+    name: "the plugin never calls session.interrupt",
+    run: () => assert.doesNotMatch(SRC, /session\.interrupt/),
+  },
+  {
+    name: "no .interrupt( call survives anywhere in the source",
+    run: () =>
+      assert.deepEqual(
+        [...SRC.matchAll(/([A-Za-z_$][\w$]*)\.interrupt\s*\(/g)].map((m) => m[0]),
+        [],
+      ),
+  },
+  {
+    name: "the delivery frame is exactly 'Copy to use:'",
+    run: () => assert.ok(SRC.includes("text: `Copy to use:"), "frame not found in source"),
+  },
+  {
+    name: "the retired long preface is gone from the source",
+    run: () => assert.doesNotMatch(SRC, /DO NOT execute or answer it\./),
+  },
+  {
+    name: "frame and rewrite stay separated by a blank line",
+    run: () =>
+      assert.ok(
+        SRC.includes("Copy to use:\\n\\n${finalText}"),
+        "frame/rewrite separator changed",
+      ),
+  },
+  {
+    name: "the cleaner strips the frame it now ships",
+    run: () =>
+      assert.equal(cleanWrapperTags("Copy to use:\n\nExplain the bug."), "Explain the bug."),
+  },
+]
+for (const c of deliveryContract) {
+  try {
+    c.run()
+    console.log(`PASS  ${c.name}`)
+    pass++
+  } catch (e) {
+    console.log(`FAIL  ${c.name}: ${e.message}`)
     fail++
   }
 }

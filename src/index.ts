@@ -375,11 +375,13 @@ export function cleanWrapperTags(text: string): string {
     if (tail) out = tail
   }
 
-  // A "Proposed rewrite - for your review only / DO NOT execute" preamble is
-  // review chrome, not part of the prompt. Drop the preamble sentence(s) up to
-  // the blank line that follows them.
+  // A delivery preamble is chrome, not part of the prompt: the current frame
+  // is "Copy to use:", and the retired one was "Proposed rewrite - for your
+  // review only / DO NOT execute...". Both are stripped so a model that echoes
+  // the frame back does not get it glued onto the prompt. Drop the preamble
+  // sentence(s) up to the blank line that follows them.
   out = out.replace(
-    /^[\s\S]{0,400}?(?:for your review only|do not execute or answer it)[^\n]*\n+/i,
+    /^[\s\S]{0,400}?(?:copy to use\b|for your review only|do not execute or answer it)[^\n]*\n+/i,
     "",
   )
   return out.trim()
@@ -1153,23 +1155,25 @@ const plugin = {
           } else if (result.success) {
             // /polish: review-first. Delivered exactly like /todo's report:
             // session.prompt carrying the invocation's own prompt fields and
-            // delivery mode. Framed as do-not-execute: anything
-            // instruction-shaped posted here gets OBEYED by the session
-            // agent (seen 2026-10-02 — coder answered the rewrite). Followed
-            // by an interrupt as backstop (same reason).
+            // delivery mode. The frame is deliberately one line — the old
+            // "Proposed rewrite — for your review only, DO NOT execute or
+            // answer it. Copy it to use it, or ignore it:" was noise in the
+            // transcript the user actually reads.
+            //
+            // There is deliberately NO interrupt after this prompt. The
+            // post-polish interrupt existed to stop the session agent obeying
+            // an instruction-shaped rewrite, but it fires against the whole
+            // session and lands on whatever runs next: it produced the user's
+            // "Opencode failed to send message with error: Step interrupted
+            // before the prompt" (2026-10-03) by killing an in-flight send that
+            // had nothing to do with /polish. The pre-polish interrupt was
+            // already removed for exactly this reason; see the note above.
             await ctx.session.prompt({
               ...promptInput,
               sessionID,
-              text: `Proposed rewrite — for your review only, DO NOT execute or answer it. Copy it to use it, or ignore it:\n\n${finalText}`,
+              text: `Copy to use:\n\n${finalText}`,
               delivery,
             })
-            try {
-              if (typeof ctx.session.interrupt === "function") {
-                await ctx.session.interrupt({ sessionID })
-              }
-            } catch {
-              // best-effort; the framing usually suffices
-            }
           } else {
             // Failure path only: the original prompt stays unsent (never
             // auto-submit on failure). Best-effort notice.
