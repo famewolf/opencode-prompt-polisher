@@ -581,6 +581,22 @@ export function looksLikeLeak(text: string): boolean {
   return false
 }
 
+/**
+ * Detect a model refusal to rewrite: noisy input ("sing tinkle START",
+ * observed 2026-10-03) makes the model punt with "Do not perform any action
+ * or provide a response." instead of a rewrite, and no other guard catches
+ * it — so the refusal shipped as the polished prompt.
+ *
+ * Deliberately opening-anchored: a legitimate rewrite may CONTAIN
+ * constraints ("do not reveal the key"), but a rewrite that OPENS as a
+ * refusal to act is not a rewrite at all.
+ */
+export function looksLikeRefusal(text: string): boolean {
+  const t = text.trim()
+  if (!t) return false
+  return /^(do not perform any action|do nothing|take no action|no action\b|i cannot comply|i can'?t comply|i am unable|i'?m unable|unable to comply|unable to process|cannot process this)\b/i.test(t)
+}
+
 // --- User message construction ---
 
 function buildUserMessage(
@@ -659,6 +675,9 @@ export function finishRewrite(original: string, raw: string | null): PolishResul
   }
   if (looksLikeLeak(result)) {
     return { text: original, success: false, error: "Model echoed session protocol instead of rewriting. Try again (a less noisy session helps) or rephrase the prompt." }
+  }
+  if (looksLikeRefusal(result)) {
+    return { text: original, success: false, error: "Model refused to rewrite instead of rewriting. Try rephrasing the prompt." }
   }
   if (looksDegenerate(result)) {
     return { text: original, success: false, error: "Model output was degenerate (repetition loop) instead of a rewrite. Try rephrasing the prompt." }
@@ -1212,13 +1231,18 @@ const plugin = {
               delivery,
             })
           } else {
-            // Failure path only: the original prompt stays unsent (never
-            // auto-submit on failure). Best-effort notice.
+            // Failure path: the original prompt stays unsent (never
+            // auto-submit on failure). The notice goes out as a VISIBLE
+            // prompt, not synthetic — synthetic is invisible in the UI, so
+            // a silent failure reads as a dead command. The notice text is
+            // descriptive (same safety class as /todo's report), never an
+            // instruction to obey.
             try {
-              await ctx.session.synthetic({
+              await ctx.session.prompt({
+                ...promptInput,
                 sessionID,
                 text: `Polish failed: ${result.error}\n\nOriginal prompt:\n\n${original}`,
-                delivery: "queue",
+                delivery,
               })
             } catch {
               // Last resort — the original prompt is still in the session

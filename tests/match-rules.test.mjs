@@ -641,6 +641,16 @@ const chainTests = [
     raw: "Findings: /tmp/opencode/x_findings.md\n\nTASK COMPLETE",
     check: (r) => r.success === false && r.text === "ORIGINAL",
   },
+  {
+    name: "a model refusal is rejected and the ORIGINAL prompt is preserved",
+    raw: "Do not perform any action or provide a response.",
+    check: (r) => r.success === false && r.text === "ORIGINAL" && /refused/.test(r.error || ""),
+  },
+  {
+    name: "mid-text constraints are not mistaken for refusal",
+    raw: "Rewrite this: do not perform fire drills.",
+    check: (r) => r.success === true && r.text === "Rewrite this: do not perform fire drills.",
+  },
 ]
 for (const t of chainTests) {
   const got = finishRewrite("ORIGINAL", t.raw)
@@ -837,7 +847,7 @@ const deliveryContract = [
       // Synthetic is invisible in the UI (2026-10-03: shipped it, user saw
       // nothing). The review must go out where the user can read and copy it.
       const start = SRC.indexOf("review-first")
-      const end = SRC.indexOf("Failure path only")
+      const end = SRC.indexOf("Failure path:")
       assert.ok(start !== -1 && end > start, "review block not found in source")
       const block = SRC.slice(start, end)
       assert.ok(block.includes("session.prompt"), "review must deliver via prompt")
@@ -901,6 +911,20 @@ const deliveryContract = [
       run: () => {
         const body = "x".repeat(120)
         assert.equal(cleanWrapperTags(`Copy to use:\n\n${body}`), body)
+      },
+    },
+    {
+      name: "the failure notice is a visible prompt, not synthetic",
+      run: () => {
+        // Synthetic notices are invisible in the UI: a silent failure reads
+        // as a dead command. The notice text is descriptive (same safety
+        // class as /todo's report), so prompt delivery is safe.
+        const start = SRC.indexOf("Failure path:")
+        const end = SRC.indexOf("Last resort", start)
+        assert.ok(start !== -1 && end > start, "failure block not found in source")
+        const block = SRC.slice(start, end)
+        assert.ok(block.includes("session.prompt"), "failure notice must be visible")
+        assert.ok(!block.includes("session.synthetic"), "failure notice must not use invisible synthetic")
       },
     },
     {
