@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, appendFileSync } from "node:fs"
+import { readFileSync, existsSync, appendFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 
@@ -599,6 +599,49 @@ async function polishViaSDK(
  * Tried in order so a future runtime change degrades to a loud warning instead
  * of another silent leak.
  */
+/** One-shot dump of the real plugin context shape.
+ *
+ *  Three previous attempts to clean up the scratch compartment were written
+ *  against ASSUMED shapes (`ctx.session.remove`, `ctx.client.session.delete`,
+ *  `ctx.session.delete`) and all three came back undefined at runtime — the
+ *  only reason that was knowable is the NOAPI line in polish_cleanup.log.
+ *  Inferring the API from a package's types is not evidence; this is. Written
+ *  once per server process, deleted and rewritten on each start.
+ */
+let ctxShapeDumped = false
+function dumpCtxShape(ctx: any): void {
+  if (ctxShapeDumped) return
+  ctxShapeDumped = true
+  const keys = (o: any): string[] => {
+    try {
+      return o ? Object.keys(o).sort() : []
+    } catch {
+      return ["<unreadable>"]
+    }
+  }
+  const shape: Record<string, unknown> = {
+    ctxKeys: keys(ctx),
+    ctxTypes: Object.fromEntries(
+      keys(ctx).map((k) => [k, typeof (ctx as any)[k]]),
+    ),
+    sessionKeys: keys(ctx?.session),
+    clientPresent: ctx?.client !== undefined && ctx?.client !== null,
+    clientKeys: keys(ctx?.client),
+    clientSessionKeys: keys(ctx?.client?.session),
+    // Any namespace that mentions delete/remove/destroy/archive is a candidate.
+    deleteLikeEverywhere: Object.fromEntries(
+      keys(ctx)
+        .map((k) => [k, keys((ctx as any)[k]).filter((m) => /delete|remove|destroy|archive|rm|purge|close|end/i.test(m))])
+        .filter(([, v]) => (v as string[]).length > 0),
+    ),
+  }
+  try {
+    writeFileSync(join("/tmp", "opencode", "polish_ctx_shape.json"), JSON.stringify(shape, null, 2))
+  } catch {
+    // diagnostics must never break the plugin
+  }
+}
+
 async function removeCompartment(ctx: any, sessionID: string): Promise<void> {
   // The compartment was created with `location: { directory }`, so the delete
   // must be scoped the same way — an unscoped DELETE can fail to resolve the
@@ -655,6 +698,7 @@ const POLISH_PERMISSIONS = [
 const plugin = {
   id: "prompt-polisher",
   async setup(ctx: any) {
+    dumpCtxShape(ctx)
     const denyAll = POLISH_PERMISSIONS
 
     // ── Polish agent: hidden subagent, no tools, single step ──
