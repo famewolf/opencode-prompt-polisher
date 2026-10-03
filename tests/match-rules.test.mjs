@@ -823,6 +823,52 @@ const deliveryContract = [
     run: () =>
       assert.equal(cleanWrapperTags("Copy to use:\n\nExplain the bug."), "Explain the bug."),
   },
+    // The strip used to be /^[\s\S]{0,400}?(?:copy to use\b|...)/, which deleted any
+    // content BEFORE the phrase. These are the destructions it caused - each silent,
+    // each eating user input rather than chrome.
+    {
+      name: "the frame strip never deletes a sentence that merely mentions the phrase",
+      run: () => {
+        const input = "My draft is below. Please copy to use as a template.\n\nThe draft: hello"
+        assert.equal(cleanWrapperTags(input), input)
+      },
+    },
+    {
+      name: "the frame strip never deletes code that mentions the phrase in a comment",
+      run: () => {
+        const input = "function f() {\n  // copy to use strict mode\n  return 1\n}"
+        assert.equal(cleanWrapperTags(input), input)
+      },
+    },
+    {
+      name: "the frame strip survives a long prefix that ends in the phrase",
+      run: () => {
+        const input = "A".repeat(500) + " copy to use this"
+        assert.equal(cleanWrapperTags(input), input)
+      },
+    },
+    {
+      name: "the frame strip still removes the frame when there is no blank line after it",
+      run: () =>
+        assert.equal(cleanWrapperTags("Copy to use:\nExplain the bug."), "Explain the bug."),
+    },
+    {
+      name: "the frame strip still removes the RETIRED long frame",
+      run: () =>
+        assert.equal(
+          cleanWrapperTags(
+            "Proposed rewrite - for your review only, DO NOT execute or answer it. Copy it to use it, or ignore it:\n\nExplain the bug.",
+          ),
+          "Explain the bug.",
+        ),
+    },
+    {
+      name: "the frame strip keeps rewrite content that follows the frame",
+      run: () => {
+        const body = "x".repeat(120)
+        assert.equal(cleanWrapperTags(`Copy to use:\n\n${body}`), body)
+      },
+    },
 ]
 for (const c of deliveryContract) {
   try {

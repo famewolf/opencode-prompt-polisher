@@ -380,10 +380,42 @@ export function cleanWrapperTags(text: string): string {
   // review only / DO NOT execute...". Both are stripped so a model that echoes
   // the frame back does not get it glued onto the prompt. Drop the preamble
   // sentence(s) up to the blank line that follows them.
-  out = out.replace(
-    /^[\s\S]{0,400}?(?:copy to use\b|for your review only|do not execute or answer it)[^\n]*\n+/i,
-    "",
-  )
+  // Strip the delivery frame, but ONLY when it really is a frame.
+  //
+  // The previous form was `/^[\s\S]{0,400}?(?:copy to use\b|...)[^\n]*\n+/i`, and
+  // `[\s\S]{0,400}?` matched ANY content before the phrase - so the strip DELETED
+  // it. Two measured destructions, both of legitimate user input:
+  //   "My draft is below. Please copy to use as a template.\n\nThe draft: hello"
+  //     -> "The draft: hello"     (the opening sentence was gone)
+  //   "function f() {\n  // copy to use strict mode\n  return 1\n}"
+  //     -> "  return 1\n}"        (the function head was gone)
+  //
+  // A frame line STARTS with its marker; a line that merely CONTAINS one is user
+  // content. Anchoring on the line start is the whole fix, and it costs nothing:
+  // the frame we emit is a single leading line.
+  // `proposed rewrite` is the retired frame's own opening words; including it
+  // keeps an echo of the OLD frame strippable, which is the whole reason a model
+  // that saw it before an upgrade can still have its rewrite cleaned.
+  const FRAME_LINE =
+    /^\s*(?:copy to use\b|proposed rewrite\b|for your review only\b|do not execute or answer it\b)/i
+  const head = out.split("\n")
+  let cut = 0
+  while (cut < head.length) {
+    const line = head[cut]
+    if (!line.trim()) break // a blank line ends the leading frame
+    if (FRAME_LINE.test(line)) {
+      cut += 1
+      continue
+    }
+    // Stop at the first line that is not a frame. There is deliberately no
+    // "short continuation line" allowance here: an earlier attempt had one, and
+    // it kept eating short CONTENT lines until it hit a long one, so
+    // "Copy to use:\nExplain the bug." came back empty. Both the frame we ship
+    // and the retired one are a single line, so the allowance bought nothing and
+    // cost a prompt.
+    break
+  }
+  if (cut > 0) out = head.slice(cut).join("\n")
   return out.trim()
 }
 /**
