@@ -621,7 +621,53 @@ export function finishRewrite(original: string, raw: string | null): PolishResul
   if (looksDegenerate(result)) {
     return { text: original, success: false, error: "Model output was degenerate (repetition loop) instead of a rewrite. Try rephrasing the prompt." }
   }
+  if (looksLikeRestatement(original, result)) {
+    return { text: original, success: false, error: "Model restated the instruction instead of rewriting it. Try rephrasing the prompt." }
+  }
   return { text: result, success: true }
+}
+
+/** Compose the prompt for the stateless path.
+ *
+ *  ctx.generate.text accepts only {prompt, model} - there is no system-prompt
+ *  field - so the system instructions must be carried inline. Omitting them was
+ *  a regression: the compartment path ran the hidden `polish` agent, whose
+ *  system prompt is POLISH_SYSTEM_PROMPT (assigned at agent registration), so
+ *  the model had "You are a text transformation function, not an AI assistant"
+ *  before this point and does NOT have it now. Without them the model degraded
+ *  to restating the instruction instead of rewriting it -
+ *  'Rewrite the following instruction clearly and completely: "Sing the song
+ *  Twinkle Twinkle Little Star."' - which is not a rewrite at all.
+ */
+/** Reject a rewrite that merely restates the instruction instead of doing it.
+ *
+ *  Observed 2026-10-03 on input `Sing the song Twinkle Twinkle Little Star.`:
+ *  the model returned
+ *      Rewrite the following instruction clearly and completely: "Sing the song
+ *      Twinkle Twinkle Little Star."
+ *  which is an instruction to rewrite, not a rewrite. looksLikeAnswer does not
+ *  match it (it is not an answer) and looksLikeDegenerate does not (it is
+ *  short), so it was delivered as a successful polish.
+ *
+ *  Deliberately narrow, because "rewrite X" is a legitimate thing for a user to
+ *  ask for: BOTH conditions must hold - the output opens with a meta-imperative
+ *  about transforming the input, AND it quotes the original prompt verbatim.
+ *  A real rewrite that happens to share a phrase with the original fails neither.
+ */
+export function looksLikeRestatement(original: string, text: string): boolean {
+  const t = text.trim()
+  if (!/^(please\s+)?(rewrite|rephrase|paraphrase|reword|translate|summari[sz]e|expand|shorten)\b/i.test(t)) {
+    return false
+  }
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").replace(/[.!?,;:"'`]/g, "").trim()
+  const quoted = t.match(/["“']([^"”']{12,})["”']/)
+  const candidate = norm(quoted ? quoted[1] : t)
+  const o = norm(original)
+  return o.length >= 12 && (candidate === o || candidate.includes(o))
+}
+
+export function buildGeneratePrompt(userMsg: string): string {
+  return `${POLISH_SYSTEM_PROMPT}\n\n---\n\n${userMsg}`
 }
 
 /**
@@ -648,7 +694,7 @@ async function polishViaGenerate(
   if (typeof gen !== "function") return null
   try {
     const resp: any = await gen({
-      prompt: userMsg,
+      prompt: buildGeneratePrompt(userMsg),
       model: { providerID: modelRef.providerID, id: modelRef.modelID },
     })
     if (resp?.error) {
@@ -665,7 +711,7 @@ async function polishViaGenerate(
       logPolish(`GEN-SHAPE keys=${Object.keys(resp ?? {}).join(",") || typeof resp}`)
       return null
     }
-    logPolish(`GEN-OK ${raw.length} chars`)
+    logPolish(`GEN-OK ${raw.length} chars: ${raw.slice(0, 160).replace(/\s+/g, " ")}`)
     return finishRewrite(original, raw)
   } catch (err) {
     logPolish(`GEN-THREW ${(err as Error)?.message ?? err}`)

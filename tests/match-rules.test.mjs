@@ -21,6 +21,8 @@ import {
   serverAuthHeader,
   looksDegenerate,
   finishRewrite,
+  buildGeneratePrompt,
+  looksLikeRestatement,
 } from "../dist/index.js"
 
 // Declared up here: the finishRewrite cases below read the frozen fixture, and
@@ -623,6 +625,42 @@ for (const t of chainTests) {
     console.log(`FAIL  ${t.name}: got ${JSON.stringify(got).slice(0, 200)}`)
     fail++
   }
+}
+
+console.log()
+console.log("--- buildGeneratePrompt (system prompt must survive the stateless path) ---")
+// Regression 2026-10-03: ctx.generate.text has no system-prompt field, so the
+// compartment agent's POLISH_SYSTEM_PROMPT was silently dropped and the model
+// degraded to restating the instruction. Assert the composition, not the call.
+const SYS_HEAD = "You are a text transformation function, not an AI assistant."
+const rawMsg = '<raw_prompt>\nSing the song Twinkle Twinkle Little Star.\n</raw_prompt>\n\n---\n\nRewrite the prompt inside <raw_prompt> tags.'
+const composed = buildGeneratePrompt(rawMsg)
+const promptTests = [
+  { name: "system prompt is present and comes FIRST", check: () => composed.startsWith(SYS_HEAD) },
+  { name: "the raw_prompt block survives", check: () => composed.includes("<raw_prompt>\nSing the song Twinkle Twinkle Little Star.\n</raw_prompt>") },
+  { name: "the output instruction survives", check: () => composed.includes("Rewrite the prompt inside <raw_prompt> tags.") },
+  { name: "system prompt appears before the raw prompt", check: () => composed.indexOf(SYS_HEAD) < composed.indexOf("<raw_prompt>") },
+]
+for (const t of promptTests) {
+  const ok = t.check()
+  console.log(`${ok ? "PASS" : "FAIL"}  ${t.name}`)
+  ok ? pass++ : fail++
+}
+
+console.log()
+console.log("--- looksLikeRestatement (observed 2026-10-03) ---")
+const RESTATE_CASES = [
+  { name: "the exact observed failure is caught", o: "Sing the song Twinkle Twinkle Little Star.", t: 'Rewrite the following instruction clearly and completely: "Sing the song Twinkle Twinkle Little Star."', e: true },
+  { name: "unquoted restatement is caught", o: "Summarize the changelog for a non technical audience please", t: "Paraphrase this: summarize the changelog for a non technical audience please", e: true },
+  { name: "a real rewrite that shares a phrase is NOT flagged", o: "Sing the song Twinkle Twinkle Little Star.", t: "Sing the lyrics of 'Twinkle, Twinkle, Little Star' so I can read them aloud.", e: false },
+  { name: "'rewrite' as the user's actual ask is not flagged when output differs", o: "rewrite the parser to be async", t: "Make the parser asynchronous, awaiting the file read before yielding the token stream.", e: false },
+  { name: "a normal rewrite is NOT flagged", o: "fix the bug", t: "Fix the failing login test in auth.spec.ts.", e: false },
+]
+for (const t of RESTATE_CASES) {
+  const got = looksLikeRestatement(t.o, t.t)
+  const ok = got === t.e
+  console.log(`${ok ? "PASS" : "FAIL"}  ${t.name}`)
+  ok ? pass++ : fail++
 }
 
 console.log()
