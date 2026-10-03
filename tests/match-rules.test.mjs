@@ -16,6 +16,7 @@ import {
   stripJsoncComments,
   extractText,
   extractLatestAssistantText,
+  extractContext,
 } from "../dist/index.js"
 
 const DEFAULT_CONFIG = {
@@ -412,6 +413,90 @@ const wrapperTests = [
 ]
 for (const t of wrapperTests) {
   const got = cleanWrapperTags(t.text)
+  const ok = got === t.expected
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: expected ${JSON.stringify(t.expected)}, got ${JSON.stringify(got)}`)
+    fail++
+  }
+}
+
+console.log()
+console.log("--- extractContext (leak vector, observed 2026-10-02) ---")
+// The polish agent role-played a findings file and a "Proposed rewrite" wrapper
+// because extractContext fed it assistant turns full of agent meta-chatter.
+// looksLikeSessionDump's denylist does not match ordinary prose, so the fix is
+// to drop the assistant class entirely, not to pattern-match it harder.
+const contextTests = [
+  {
+    name: "assistant turns are dropped even when they read as ordinary prose",
+    messages: [
+      { type: "user", text: "sing the happy birthday song" },
+      {
+        type: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "58/58 tests pass, committed a9a3da3. Now let me clear the two leftover compartments.",
+          },
+        ],
+      },
+      {
+        type: "assistant",
+        content: [
+          { type: "text", text: "The log is decisive, and it says my fix is still wrong:" },
+        ],
+      },
+    ],
+    expected: "[User]: sing the happy birthday song",
+  },
+  {
+    name: "system and synthetic turns are dropped",
+    messages: [
+      { type: "system", text: "you are opencode" },
+      { type: "synthetic", text: "continue" },
+      { type: "user", text: "what is 3 plus 4" },
+    ],
+    expected: "[User]: what is 3 plus 4",
+  },
+  {
+    name: "a user turn carrying a findings path is still dropped",
+    messages: [
+      { type: "user", text: "Findings: /tmp/opencode/x_findings.md" },
+      { type: "user", text: "now the real ask" },
+    ],
+    expected: "[User]: now the real ask",
+  },
+  {
+    name: "maxMessages caps kept user turns",
+    messages: [
+      { type: "user", text: "one" },
+      { type: "user", text: "two" },
+      { type: "user", text: "three" },
+    ],
+    maxMessages: 2,
+    expected: "[User]: two\n\n[User]: three",
+  },
+  {
+    name: "long user turns are truncated to maxChars",
+    messages: [{ type: "user", text: "abcdefghij" }],
+    maxChars: 4,
+    expected: "[User]: abcd...",
+  },
+  {
+    name: "legacy V1 {info:{role}} shapes resolve to user",
+    messages: [{ info: { role: "user" }, text: "legacy ask" }],
+    expected: "[User]: legacy ask",
+  },
+]
+for (const t of contextTests) {
+  const got = extractContext(
+    t.messages,
+    t.maxMessages ?? 6,
+    t.maxChars ?? 500,
+  )
   const ok = got === t.expected
   if (ok) {
     console.log(`PASS  ${t.name}`)

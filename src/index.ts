@@ -222,7 +222,7 @@ function looksLikeSessionDump(text: string): boolean {
   return false
 }
 
-function extractContext(
+export function extractContext(
   messages: any[],
   maxMessages: number,
   maxChars: number,
@@ -231,7 +231,7 @@ function extractContext(
   // are assistant dumps, so slicing to maxMessages first starves the context of
   // the user's own asks — which are the only thing a prompt rewriter needs.
   const recent = messages.slice(-(maxMessages * 4))
-  const parts: string[] = []
+  const kept: string[] = []
   for (const msg of recent) {
     // V2 messages discriminate on `type` ("user" | "assistant" | "system" | ...),
     // not `role`. Legacy V1 shapes ({info:{role}}) still fall through below.
@@ -239,19 +239,30 @@ function extractContext(
     if (kind === "system") continue
     // Command echoes and plugin notices are harness protocol, not conversation.
     if (kind === "synthetic") continue
+    // Assistant messages are dropped ENTIRELY, not pattern-filtered.
+    //
+    // A rewriter needs the user's asks; assistant turns are never input to a
+    // rewrite. Worse, they are the leak vector: this session's assistant turns
+    // ("58/58 tests pass, committed a9a3da3", "The log is decisive, and it says
+    // my fix is still wrong:") sailed past `looksLikeSessionDump` because none
+    // of its patterns match ordinary prose, and the polish agent then copied the
+    // shape — emitting "Findings: /tmp/..." and a "Proposed rewrite — for your
+    // review only" wrapper instead of the prompt. A denylist loses to prose it
+    // has not seen; dropping the whole class cannot lose.
+    if (kind !== "user") continue
     const text = extractText(msg)
     if (!text) continue
-    if (kind === "assistant" && looksLikeSessionDump(text)) continue
-    const label =
-      kind === "user" ? "User"
-      : kind === "assistant" ? "Assistant"
-      : String(kind)
+    if (looksLikeSessionDump(text)) continue
     const truncated =
       text.length > maxChars ? text.slice(0, maxChars) + "..." : text
-    parts.push(`[${label}]: ${truncated}`)
-    if (parts.length >= maxMessages) break
+    kept.push(`[User]: ${truncated}`)
   }
-  return parts.join("\n\n")
+  // Keep the MOST RECENT maxMessages, not the first ones found in the scan
+  // window. The window is 4x wider than the budget on purpose: interleaved
+  // non-user turns get skipped, so the turns that survive must be the latest
+  // ones, otherwise a session that opened with "explain X" silently steers a
+  // rewrite of "fix that bug" from twenty messages ago.
+  return kept.slice(-maxMessages).join("\n\n")
 }
 
 export function extractText(msg: any): string {
@@ -626,12 +637,40 @@ function dumpCtxShape(ctx: any): void {
     ),
     sessionKeys: keys(ctx?.session),
     clientPresent: ctx?.client !== undefined && ctx?.client !== null,
-    clientKeys: keys(ctx?.client),
-    clientSessionKeys: keys(ctx?.client?.session),
+    // Depth 2 on the namespaces that could carry a delete or an HTTP escape
+    // hatch. Depth 1 already proved the answer is not at the top level.
+    depth2: Object.fromEntries(
+      keys(ctx)
+        .filter((k) => typeof (ctx as any)[k] === "object" && (ctx as any)[k] !== null)
+        .map((k) => [k, keys((ctx as any)[k])]),
+    ),
+    sessionDepth2: Object.fromEntries(
+      keys(ctx?.session)
+        .filter((k) => typeof (ctx as any).session?.[k] === "object" && (ctx as any).session?.[k] !== null)
+        .map((k) => [k, keys((ctx as any).session[k])]),
+    ),
+    // Function bodies, trimmed: an RPC escape hatch would call the server's
+    // session-delete route without the plugin needing a client.
+    fnSources: Object.fromEntries(
+      (["rpc"] as string[])
+        .filter((k) => typeof (ctx as any)[k] === "function")
+        .concat(["session.generate", "session.get", "session.move", "storage.set", "storage.get", "app.fetch"])
+        .map((path) => {
+          const fn = path
+            .split(".")
+            .reduce<any>((o, p) => (o == null ? o : o[p]), ctx)
+          return [path, typeof fn === "function" ? String(fn).slice(0, 240) : `<<${typeof fn}>>`]
+        }),
+    ),
     // Any namespace that mentions delete/remove/destroy/archive is a candidate.
     deleteLikeEverywhere: Object.fromEntries(
       keys(ctx)
-        .map((k) => [k, keys((ctx as any)[k]).filter((m) => /delete|remove|destroy|archive|rm|purge|close|end/i.test(m))])
+        .map((k) => [
+          k,
+          keys((ctx as any)[k]).filter((m) =>
+            /^(delete|remove|destroy|archive|purge|dispose|drop)$/i.test(m),
+          ),
+        ])
         .filter(([, v]) => (v as string[]).length > 0),
     ),
   }
