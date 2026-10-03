@@ -1185,25 +1185,22 @@ const plugin = {
               delivery,
             })
           } else if (result.success) {
-            // /polish: review-first. Delivered exactly like /todo's report:
-            // session.prompt carrying the invocation's own prompt fields and
-            // delivery mode. The frame is deliberately one line — the old
-            // "Proposed rewrite — for your review only, DO NOT execute or
-            // answer it. Copy it to use it, or ignore it:" was noise in the
-            // transcript the user actually reads.
-            //
-            // There is deliberately NO interrupt after this prompt. The
-            // post-polish interrupt existed to stop the session agent obeying
-            // an instruction-shaped rewrite, but it fires against the whole
-            // session and lands on whatever runs next: it produced the user's
-            // "Opencode failed to send message with error: Step interrupted
-            // before the prompt" (2026-10-03) by killing an in-flight send that
-            // had nothing to do with /polish. The pre-polish interrupt was
-            // already removed for exactly this reason; see the note above.
+            // /polish: review-first. Delivered as a session PROMPT carrying
+            // the invocation's own prompt fields and delivery mode: prompts
+            // are visible in the UI and `synthetic` is not (2026-10-03 —
+            // review-via-synthetic shipped, user reports no visible text,
+            // same reason an earlier build moved off synthetic). The rewrite
+            // ships fenced so it reads as quotable content. Residual risk,
+            // stated plainly: an instruction-shaped rewrite of a fragment
+            // ("Please give me a cookie.") can still be obeyed as a task —
+            // the channel that would stop it is the one the user cannot see.
+            // The frame stays one line: the old long review-only preface was
+            // noise. No interrupt anywhere on this path (whole-session
+            // abort + error flash on every use — both rejected).
             await ctx.session.prompt({
               ...promptInput,
               sessionID,
-              text: `Copy to use:\n\n${finalText}`,
+              text: `Copy to use:\n\n\`\`\`\n${finalText}\n\`\`\``,
               delivery,
             })
           } else {

@@ -811,11 +811,24 @@ const deliveryContract = [
     run: () => assert.doesNotMatch(SRC, /DO NOT execute or answer it\./),
   },
   {
-    name: "frame and rewrite stay separated by a blank line",
+    name: "the review delivery is a visible prompt, not synthetic",
+    run: () => {
+      // Synthetic is invisible in the UI (2026-10-03: shipped it, user saw
+      // nothing). The review must go out where the user can read and copy it.
+      const start = SRC.indexOf("review-first")
+      const end = SRC.indexOf("Failure path only")
+      assert.ok(start !== -1 && end > start, "review block not found in source")
+      const block = SRC.slice(start, end)
+      assert.ok(block.includes("session.prompt"), "review must deliver via prompt")
+      assert.ok(!block.includes("session.synthetic"), "review must not use invisible synthetic")
+    },
+  },
+  {
+    name: "frame, fence, and rewrite stay in the shipped layout",
     run: () =>
       assert.ok(
-        SRC.includes("Copy to use:\\n\\n${finalText}"),
-        "frame/rewrite separator changed",
+        SRC.includes("Copy to use:\\n\\n\\`\\`\\`\\n${finalText}\\n\\`\\`\\`"),
+        "frame/fence/rewrite layout changed",
       ),
   },
   {
@@ -867,6 +880,16 @@ const deliveryContract = [
       run: () => {
         const body = "x".repeat(120)
         assert.equal(cleanWrapperTags(`Copy to use:\n\n${body}`), body)
+      },
+    },
+    {
+      name: "the fenced delivery round-trips through the cleaners",
+      run: () => {
+        // What /polish now ships: frame + fenced rewrite. It must read back
+        // as the bare rewrite, so a re-polish or quote sees content, not chrome.
+        const body = "Please give me a cookie."
+        const shipped = `Copy to use:\n\n\`\`\`\n${body}\n\`\`\``
+        assert.equal(cleanFences(cleanWrapperTags(shipped)), body)
       },
     },
 ]
