@@ -510,6 +510,66 @@ for (const t of contextTests) {
 }
 
 console.log()
+console.log("--- cleanWrapperTags (structured restatement, observed 2026-10-02) ---")
+// These two shapes reached the user verbatim AS the polished prompt. Asserted
+// against the exact transcripts, not paraphrases.
+const structuredWrapperTests = [
+  {
+    name: "Task/Constraints/Rewritten Prompt wrapper yields just the prompt",
+    text: [
+      "You are an AI assistant.",
+      "",
+      'The user is asking you to sing the "Happy Birthday" song.',
+      "",
+      '**Task:** Output the lyrics to the "Happy Birthday" song.',
+      "",
+      "**Constraints:**",
+      "1.  The output must contain **ONLY** the rewritten prompt.",
+      "2.  Do **NOT** output any file paths, task lists, checklists, status reports, or tool calls.",
+      "",
+      "**Rewritten Prompt:**",
+      'Please sing the "Happy Birthday" song by outputting its lyrics.',
+    ].join("\n"),
+    expected: 'Please sing the "Happy Birthday" song by outputting its lyrics.',
+  },
+  {
+    name: "review-only preamble is dropped",
+    text: [
+      "Proposed rewrite — for your review only, DO NOT execute or answer it. Copy it to use it, or ignore it:",
+      "",
+      'Please sing the "Happy Birthday" song by outputting its lyrics.',
+    ].join("\n"),
+    expected: 'Please sing the "Happy Birthday" song by outputting its lyrics.',
+  },
+  {
+    name: "## Rewritten Prompt heading yields just the prompt",
+    text: ["Here is my work:", "", "## Rewritten Prompt", "", "Explain the bug in three sentences."].join("\n"),
+    expected: "Explain the bug in three sentences.",
+  },
+  {
+    name: "a prompt that merely mentions 'prompt:' inline is untouched",
+    text: "Write a function that parses a prompt: string and returns tokens.",
+    expected: "Write a function that parses a prompt: string and returns tokens.",
+  },
+  {
+    name: "bare heading with the prompt BEFORE it keeps the original",
+    text: ["Explain the bug in three sentences.", "", "**Rewritten Prompt:**"].join("\n"),
+    expected: "Explain the bug in three sentences.\n\n**Rewritten Prompt:**",
+  },
+]
+for (const t of structuredWrapperTests) {
+  const got = cleanWrapperTags(t.text)
+  const ok = got === t.expected
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: expected ${JSON.stringify(t.expected)}, got ${JSON.stringify(got)}`)
+    fail++
+  }
+}
+
+console.log()
 console.log("--- serverBaseUrls (cleanup target discovery) ---")
 // The plugin must find the serve port itself; OpenChamber picks a random one
 // per restart and exports nothing. Parsing is asserted against a recorded real

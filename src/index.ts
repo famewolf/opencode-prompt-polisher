@@ -324,10 +324,65 @@ export function cleanThinking(text: string): string {
  * request). Case-insensitive; trims the remainder.
  */
 export function cleanWrapperTags(text: string): string {
-  if (!/raw_prompt/i.test(text)) return text
-  return text
-    .replace(/<\/?raw_prompt>/gi, "")
-    .trim()
+  let out = text
+  if (/raw_prompt/i.test(out)) {
+    out = out.replace(/<\/?raw_prompt>/gi, "").trim()
+  }
+
+  // Structured restatement wrappers (observed 2026-10-02, passed through to the
+  // user verbatim as the "polished" prompt):
+  //
+  //   You are an AI assistant.
+  //   The user is asking you to sing the "Happy Birthday" song.
+  //   **Task:** Output the lyrics to the "Happy Birthday" song.
+  //   **Constraints:** 1. ...
+  //   **Rewritten Prompt:**
+  //   Please sing the "Happy Birthday" song by outputting its lyrics.
+  //
+  // and the review variant "Proposed rewrite - for your review only. DO NOT
+  // execute or answer it." The rewrite is whatever follows the LAST wrapper
+  // heading, so the preamble is dropped rather than the whole response.
+  // Heading detection normalizes each line (strip markdown emphasis, hashes,
+  // trailing colon) and compares to a fixed vocabulary. Regex-per-variant kept
+  // missing shapes - `**Rewritten Prompt:**` failed because the colon sits
+  // inside the emphasis - and a vocabulary is easier to extend safely.
+  const HEADINGS = new Set([
+    "prompt",
+    "rewritten prompt",
+    "revised prompt",
+    "final prompt",
+    "final answer",
+    "final output",
+    "revised version",
+    "output",
+  ])
+  const normalizeHead = (line: string): string =>
+    line
+      .replace(/[*_#`>]/g, "")
+      .replace(/\s*:\s*$/, "")
+      .trim()
+      .toLowerCase()
+  const lines = out.split("\n")
+  let lastHead = -1
+  for (let i = 0; i < lines.length; i++) {
+    if (HEADINGS.has(normalizeHead(lines[i]))) lastHead = i
+  }
+  if (lastHead !== -1) {
+    const tail = lines.slice(lastHead + 1).join("\n").trim()
+    // Only accept the tail if it is non-empty; a bare heading with nothing
+    // after it means the model put the prompt BEFORE the heading, so keep the
+    // original rather than returning nothing.
+    if (tail) out = tail
+  }
+
+  // A "Proposed rewrite - for your review only / DO NOT execute" preamble is
+  // review chrome, not part of the prompt. Drop the preamble sentence(s) up to
+  // the blank line that follows them.
+  out = out.replace(
+    /^[\s\S]{0,400}?(?:for your review only|do not execute or answer it)[^\n]*\n+/i,
+    "",
+  )
+  return out.trim()
 }
 /**
  * Remove markdown code fences, keeping the inner content. Models often wrap
