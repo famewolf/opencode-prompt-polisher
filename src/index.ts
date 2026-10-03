@@ -219,6 +219,14 @@ function looksLikeSessionDump(text: string): boolean {
   if (/TASK COMPLETE/i.test(text)) return true
   if (/"todos"\s*:/.test(text)) return true
   if (/^#{1,3}\s+\S/m.test(text)) return true
+  // Plugin outputs echoed back as user turns (observed 2026-10-03: a pasted
+  // `/todo` report and pasted `/polish` deliveries sat in context while
+  // polishing "give cookie", and the rewrite came back carrying an unrelated
+  // todo). A rewrite never needs another command's output as context.
+  // Line-anchored like the frame strip: a turn that merely MENTIONS the
+  // phrase mid-line is conversation, not chrome.
+  if (/^todo\s+\[\d+\/\d+\]/im.test(text)) return true
+  if (/^copy to use\b/im.test(text)) return true
   return false
 }
 

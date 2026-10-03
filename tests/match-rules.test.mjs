@@ -504,6 +504,27 @@ const contextTests = [
     messages: [{ info: { role: "user" }, text: "legacy ask" }],
     expected: "[User]: legacy ask",
   },
+  {
+    name: "a pasted /todo report is not rewrite context",
+    messages: [
+      { type: "user", text: "Todo [0/2] - 2 open\nCurrent task: Verify /todo\n  DOING 1. Verify /todo" },
+      { type: "user", text: "give cookie" },
+    ],
+    expected: "[User]: give cookie",
+  },
+  {
+    name: "a pasted /polish delivery is not rewrite context",
+    messages: [
+      { type: "user", text: "Copy to use:\n\n```\nPlease give me a cookie.\n```" },
+      { type: "user", text: "give cookie" },
+    ],
+    expected: "[User]: give cookie",
+  },
+  {
+    name: "a mid-line mention is conversation, not chrome",
+    messages: [{ type: "user", text: "My draft says copy to use as a template" }],
+    expected: "[User]: My draft says copy to use as a template",
+  },
 ]
 for (const t of contextTests) {
   const got = extractContext(
