@@ -484,6 +484,11 @@ async function polishViaSDK(
 
   const userMsg = buildUserMessage(original, context, config)
 
+  // Tracked so the scratch session can be deleted on EVERY exit path — success,
+  // model error, validation bail-out, or thrown exception. Cleanup runs from the
+  // `finally` below and nowhere else.
+  let compartmentId: string | undefined
+
   try {
     // 1. Create the polish compartment (child session, hidden agent, config model)
     const createResp: any = await ctx.session.create({
@@ -501,6 +506,7 @@ async function polishViaSDK(
     if (!childId || typeof childId !== "string") {
       return { text: original, success: false, error: "Failed to create child session" }
     }
+    compartmentId = childId
 
     // 2. Send the prompt (soft constraint via system prompt — the V2 prompt
     //    input has no format/structured field, so the model answers in text)
@@ -528,18 +534,6 @@ async function polishViaSDK(
 
     const result = extractLatestAssistantText(messages)
 
-    // Best-effort: remove the scratch compartment so it never litters the
-    // sidebar or confuses anyone into looking for the answer there. The
-    // rewrite (if any) is already extracted above; the deliverable always
-    // goes to the invoking session as a synthetic message.
-    try {
-      if (typeof ctx.session.remove === "function") {
-        await ctx.session.remove({ sessionID: childId })
-      }
-    } catch {
-      // Leave the compartment behind; harmless.
-    }
-
     if (!result) {
       return { text: original, success: false, error: "No output from model" }
     }
@@ -556,7 +550,55 @@ async function polishViaSDK(
   } catch (err: any) {
     const msg = err?.message || String(err)
     return { text: original, success: false, error: `SDK error: ${msg}` }
+  } finally {
+    // The scratch compartment must not survive the call, whichever way this
+    // function returns. See removeCompartment for why this goes through the SDK
+    // client rather than ctx.session.
+    if (compartmentId) {
+      await removeCompartment(ctx, compartmentId)
+    }
   }
+}
+
+/**
+ * Delete the scratch child session.
+ *
+ * 2026-10-02: this cleanup never ran. `ctx.session` is the plugin-context
+ * session client, and its surface is list/create/get/switchAgent/switchModel/
+ * prompt/compact/wait/context/history/events/interrupt/message/messages — there
+ * is NO remove and NO delete on it, so the old
+ * `typeof ctx.session.remove === "function"` guard was always false and the
+ * `catch` swallowed the fact. Proof: 9 orphaned "polish-compartment" sessions in
+ * the v2 database, every one with parent_id NULL. Deletion lives on the SDK
+ * client's Session2: `client.session.delete({sessionID})` ->
+ * DELETE /session/{sessionID}, which is the same call
+ * `opencode session delete <id>` makes.
+ *
+ * Tried in order so a future runtime change degrades to a loud warning instead
+ * of another silent leak.
+ */
+async function removeCompartment(ctx: any, sessionID: string): Promise<void> {
+  const attempts: Array<() => unknown> = [
+    () => ctx?.client?.session?.delete?.({ sessionID }),
+    () => ctx?.client?.session?.remove?.({ sessionID }),
+    () => ctx?.session?.delete?.({ sessionID }),
+  ]
+  for (const attempt of attempts) {
+    try {
+      const call = attempt()
+      if (call === undefined) continue // shape absent on this runtime
+      await call
+      return
+    } catch (err) {
+      console.error(
+        `[prompt-polisher] compartment cleanup failed for ${sessionID}: ${(err as Error)?.message ?? err}`,
+      )
+      return
+    }
+  }
+  console.error(
+    `[prompt-polisher] no session-delete API on the plugin context; compartment ${sessionID} left behind`,
+  )
 }
 
 // --- Plugin (V2) ---
