@@ -637,39 +637,25 @@ const plugin = {
           return
         }
         isPolishing = true
-        // Stop any redundant agent turn on the raw slash text: in some
-        // clients the message ALSO reaches the agent as a task, which burns
-        // minutes of GPU behind the polish call and buries the result. The
-        // command owns this turn. Best-effort: never blocks the polish.
-        try {
-          if (typeof ctx.session.interrupt === "function") {
-            await ctx.session.interrupt({ sessionID })
-          }
-        } catch {
-          // no agent turn running, or interrupt unsupported — proceed
-        }
-        // Progress notice: posted as a regular prompt (not a synthetic),
-        // because synthetics do not reliably render in this UI — the review
-        // result only became consistently visible after moving to
-        // session.prompt (2026-10-02). A bare prompt would wake the agent,
-        // so interrupt immediately after: the text stays visible, no turn
-        // runs on it. Both calls best-effort.
-        try {
-          await ctx.session.prompt({
-            sessionID,
-            text: "Polishing your prompt, one moment… (no action needed)",
-            delivery,
-          })
-        } catch {
-          // progress is best-effort; the result still follows
-        }
-        try {
-          if (typeof ctx.session.interrupt === "function") {
-            await ctx.session.interrupt({ sessionID })
-          }
-        } catch {
-          // same: best-effort
-        }
+        // Delivery is a SINGLE prompt: the rewrite, and nothing else.
+        //
+        // History (2026-10-02, user-confirmed repro): the progress notice
+        // ("Polishing your prompt, one moment… (no action needed)") was posted
+        // as a second prompt. Two prompts plus a mid-turn interrupt meant the
+        // model woke holding both at once, and the pairing read as "permission
+        // granted" sitting next to an imperative sentence — so Muse Spark 1.3
+        // executed the rewrite instead of showing it. Evidence: session
+        // ses_f04cbd312ffe3G9t45jxyCKvxw, delivery text arriving as USER
+        // messages at seq 3822/3912/3972; seq 4036 "the rewrite reads as an
+        // instruction, so coder obeys it"; seq 3999 "it did not polish the
+        // prompt. it processed it". The mid-turn abort additionally produced
+        // idle:failed turns and an expired-reasoning-item provider error
+        // (seq 1444). With only the polished prompt posted, this path behaved.
+        //
+        // The pre-polish interrupt is gone for the same reason: it existed to
+        // cancel a "turn on the raw slash text" that no session ever showed
+        // arriving as a user message, and it could abort an unrelated in-flight
+        // turn the user had running.
         try {
           // Reload config on every invocation for hot-reload
           const config = loadConfig()
