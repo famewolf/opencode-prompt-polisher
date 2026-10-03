@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, appendFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 
@@ -206,28 +206,50 @@ If the user message contains an "Additional rules to follow strictly" section, t
 
 // --- Context extraction ---
 
+/** Assistant messages that are session-protocol dumps must never reach the
+ *  rewrite model: it copies their FORMAT instead of transforming the prompt.
+ *  Observed 2026-10-02 — asked to rewrite "who is taylor swift?", the polish
+ *  agent answered the question and wrapped the answer in "Findings: /tmp/… +
+ *  TASK COMPLETE", imitating the surrounding session's assistant messages. The
+ *  looksLikeLeak guard then correctly rejected the result, but the run was lost.
+ *  The cure is upstream of the guard: never feed the model a format to copy. */
+function looksLikeSessionDump(text: string): boolean {
+  if (/\/tmp\/opencode\//i.test(text)) return true
+  if (/^findings:/im.test(text)) return true
+  if (/TASK COMPLETE/i.test(text)) return true
+  if (/"todos"\s*:/.test(text)) return true
+  if (/^#{1,3}\s+\S/m.test(text)) return true
+  return false
+}
+
 function extractContext(
   messages: any[],
   maxMessages: number,
   maxChars: number,
 ): string {
-  const recent = messages.slice(-maxMessages)
+  // Scan a wider window than we keep. In a noisy session most recent messages
+  // are assistant dumps, so slicing to maxMessages first starves the context of
+  // the user's own asks — which are the only thing a prompt rewriter needs.
+  const recent = messages.slice(-(maxMessages * 4))
   const parts: string[] = []
   for (const msg of recent) {
     // V2 messages discriminate on `type` ("user" | "assistant" | "system" | ...),
     // not `role`. Legacy V1 shapes ({info:{role}}) still fall through below.
     const kind = msg.type ?? msg.role ?? msg.info?.role ?? "unknown"
     if (kind === "system") continue
+    // Command echoes and plugin notices are harness protocol, not conversation.
+    if (kind === "synthetic") continue
     const text = extractText(msg)
     if (!text) continue
+    if (kind === "assistant" && looksLikeSessionDump(text)) continue
     const label =
       kind === "user" ? "User"
       : kind === "assistant" ? "Assistant"
-      : kind === "synthetic" ? "Note"
       : String(kind)
     const truncated =
       text.length > maxChars ? text.slice(0, maxChars) + "..." : text
     parts.push(`[${label}]: ${truncated}`)
+    if (parts.length >= maxMessages) break
   }
   return parts.join("\n\n")
 }
@@ -578,27 +600,41 @@ async function polishViaSDK(
  * of another silent leak.
  */
 async function removeCompartment(ctx: any, sessionID: string): Promise<void> {
-  const attempts: Array<() => unknown> = [
-    () => ctx?.client?.session?.delete?.({ sessionID }),
-    () => ctx?.client?.session?.remove?.({ sessionID }),
-    () => ctx?.session?.delete?.({ sessionID }),
+  // The compartment was created with `location: { directory }`, so the delete
+  // must be scoped the same way — an unscoped DELETE can fail to resolve the
+  // session and throw, which is how this stayed broken for two runs.
+  const directory = ctx?.location?.directory
+  const log = (msg: string) => {
+    try {
+      appendFileSync(join("/tmp", "opencode", "polish_cleanup.log"), msg + "\n")
+    } catch {
+      // diagnostics must never break the plugin
+    }
+  }
+
+  const attempts: Array<[string, () => unknown]> = [
+    ["client.session.delete", () => ctx?.client?.session?.delete?.({ sessionID, directory })],
+    ["client.session.remove", () => ctx?.client?.session?.remove?.({ sessionID, directory })],
+    ["session.delete", () => ctx?.session?.delete?.({ sessionID, directory })],
   ]
-  for (const attempt of attempts) {
+  for (const [name, attempt] of attempts) {
     try {
       const call = attempt()
       if (call === undefined) continue // shape absent on this runtime
-      await call
+      const res: any = await call
+      const err = res && typeof res === "object" ? (res.error ?? res.data?.error) : undefined
+      if (err) {
+        log(`FAIL ${sessionID} via ${name}: ${JSON.stringify(err).slice(0, 300)}`)
+        return
+      }
+      log(`OK ${sessionID} via ${name} directory=${directory ?? "none"}`)
       return
     } catch (err) {
-      console.error(
-        `[prompt-polisher] compartment cleanup failed for ${sessionID}: ${(err as Error)?.message ?? err}`,
-      )
+      log(`THREW ${sessionID} via ${name}: ${(err as Error)?.message ?? err}`)
       return
     }
   }
-  console.error(
-    `[prompt-polisher] no session-delete API on the plugin context; compartment ${sessionID} left behind`,
-  )
+  log(`NOAPI ${sessionID} — no session-delete API on the plugin context; compartment left behind`)
 }
 
 // --- Plugin (V2) ---
