@@ -462,6 +462,41 @@ export function matchRules(prompt: string, config: PolishConfig): string[] {
  *  - Contains code fences (the model tried to write code)
  *  - Contains "I can help" / "希望能帮到" type assistant phrases
  */
+/**
+ * Reject output that has collapsed into a repetition loop.
+ *
+ * Observed 2026-10-02: the rewrite model returned 2111 words of which only 227
+ * were unique (ratio 0.108), with a single 20-word span repeated 10 times, all
+ * of it wrapped in a self-invented "Proposed rewrite - for your review only"
+ * preamble. None of that is a prompt rewrite, but it sailed past looksLikeAnswer
+ * and looksLikeLeak: the loop was long enough to look like an essay and the
+ * preamble was not session protocol.
+ *
+ * Two independent signals, either sufficient:
+ *  - unique-word ratio below the floor. Real prompts, even wordy ones, sit well
+ *    above it; a loop collapses it. Measured floor is 0.35, which is far above
+ *    the observed 0.108 and far below any sane rewrite.
+ *  - the same 20-word span occurring three or more times.
+ *
+ * Length alone is NOT a signal: a legitimately detailed prompt can be long, and
+ * rejecting on length would throw away good rewrites.
+ */
+export function looksDegenerate(text: string): boolean {
+  const words = text.trim().split(/\s+/).filter(Boolean)
+  if (words.length < 40) return false // too short to judge; short prompts are fine
+  const uniqueRatio = new Set(words.map((w) => w.toLowerCase())).size / words.length
+  if (uniqueRatio < 0.35) return true
+  const spans = new Map<string, number>()
+  const SPAN = 20
+  for (let i = 0; i <= words.length - SPAN; i++) {
+    const key = words.slice(i, i + SPAN).join(" ").toLowerCase()
+    const n = (spans.get(key) ?? 0) + 1
+    if (n >= 3) return true
+    spans.set(key, n)
+  }
+  return false
+}
+
 export function looksLikeAnswer(text: string): boolean {
   const t = text.trim()
   if (!t) return true
@@ -632,6 +667,10 @@ async function polishViaSDK(
 
     if (looksLikeLeak(result)) {
       return { text: original, success: false, error: "Model echoed session protocol instead of rewriting. Try again (a less noisy session helps) or rephrase the prompt." }
+    }
+
+    if (looksDegenerate(result)) {
+      return { text: original, success: false, error: "Model output was degenerate (repetition loop) instead of a rewrite. Try rephrasing the prompt." }
     }
 
     return { text: result, success: true }

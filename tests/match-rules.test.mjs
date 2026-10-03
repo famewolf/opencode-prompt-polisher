@@ -19,6 +19,7 @@ import {
   extractContext,
   serverBaseUrls,
   serverAuthHeader,
+  looksDegenerate,
 } from "../dist/index.js"
 
 const DEFAULT_CONFIG = {
@@ -565,6 +566,50 @@ for (const t of structuredWrapperTests) {
     pass++
   } else {
     console.log(`FAIL  ${t.name}: expected ${JSON.stringify(t.expected)}, got ${JSON.stringify(got)}`)
+    fail++
+  }
+}
+
+console.log()
+console.log("--- looksDegenerate (repetition loop, observed 2026-10-02) ---")
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
+import { dirname as _dirname, join as _join } from "node:path"
+const HERE = _dirname(fileURLToPath(import.meta.url))
+// The exact 12723-char output the model produced, frozen so the guard is
+// tested against the real transcript rather than a reconstruction of it.
+const realLoop = readFileSync(_join(HERE, "fixtures", "degenerate-monologue.txt"), "utf8")
+const degenerateTests = [
+  { name: "the real 2111-word monologue is rejected", text: realLoop, expected: true },
+  {
+    name: "a legitimately long detailed rewrite is NOT rejected",
+    text: "Rewrite the migration guide so it covers every step a new operator needs, in order, with the exact commands they run and what each one prints on success, including the two verification steps that catch the common partial-failure case where the index builds but the constraint is never attached, plus a short troubleshooting section covering the lock timeout and the disk-full error, and keep the existing tone and heading structure intact while moving the raw SQL into collapsible blocks so the narrative stays readable for someone who has never run Postgres before.",
+    expected: false,
+  },
+  {
+    name: "a short punchy rewrite is NOT rejected",
+    text: "Summarize this changelog in one sentence.",
+    expected: false,
+  },
+  {
+    name: "text under the 40-word floor is left alone",
+    text: "Fix it. Fix it now. Fix it again and again and again and again and again.",
+    expected: false,
+  },
+  {
+    name: "a plain three-times-repeated sentence is rejected",
+    text: Array(4).fill("Please review the attached configuration before deploying this change to production.").join(" "),
+    expected: true,
+  },
+]
+for (const t of degenerateTests) {
+  const got = looksDegenerate(t.text)
+  const ok = got === t.expected
+  if (ok) {
+    console.log(`PASS  ${t.name}`)
+    pass++
+  } else {
+    console.log(`FAIL  ${t.name}: expected ${t.expected}, got ${got}`)
     fail++
   }
 }
