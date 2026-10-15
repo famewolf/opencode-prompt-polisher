@@ -64,6 +64,16 @@ npm install
 npm run build
 ```
 
+需要 opencode v2.0 以上版本。
+
+## 更新
+
+npm 安装：重新运行安装命令或 `npm update opencode-prompt-polisher`；本地开发：`git pull` 后重新 `npm run build`。更新后重启 OpenCode。没有内置自动更新。
+
+## 卸载
+
+从 OpenCode 配置中删除该插件条目（npm 安装可再运行 `npm remove opencode-prompt-polisher`），重启 OpenCode。
+
 ## 命令
 
 | 命令 | 行为 |
