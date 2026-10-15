@@ -1,16 +1,16 @@
 # opencode-prompt-polisher
 
-OpenCode 插件：基于对话上下文自动优化你的提示词。
+OpenCode plugin: automatically polishes your prompts using conversation context.
 
-## 效果示例
+## Example
 
-**输入**（你写的）：
+**Input** (what you write):
 
 ```
 帮我写个搜索表格
 ```
 
-**输出**（优化后填入输入框）：
+**Output** (filled into the input box after polishing):
 
 ```
 基于现有项目（React + TypeScript），写一个支持服务端搜索的通用表格组件。需求：
@@ -20,21 +20,21 @@ OpenCode 插件：基于对话上下文自动优化你的提示词。
 4. 使用 TypeScript interface 定义 props 和数据类型
 ```
 
-插件会自动补充：技术栈、需求细节、类型要求等上下文相关约束。
+The plugin automatically adds stack, requirement details, typing requirements, and other context-derived constraints. (Examples above use Chinese prompts; the plugin works in any language — see the `default` rule.)
 
-## 功能
+## Features
 
-- **感知上下文** — 注入最近的对话消息（文件路径、错误信息、技术栈）作为优化依据
-- **安全子 agent** — 在隐藏的子 agent 中运行，工具集为空，绝不会代替你执行需求
-- **可配置** — 模型、上下文窗口、优化强度、条件式规则都通过 `polish.jsonc` 配置
-- **热重载** — 修改配置文件无需重启 OpenCode
-- **条件式规则** — 关键词命中后注入硬约束（如"SQL"→使用 CTE；"写"→TypeScript）
+- **Context-aware** — injects recent conversation messages (file paths, error messages, tech stack) as polishing evidence
+- **Safe sub-agent** — runs in a hidden sub-agent with an empty toolset; it never executes your request for you
+- **Configurable** — model, context window, intensity, and conditional rules all live in `polish.jsonc`
+- **Hot reload** — config edits apply without restarting OpenCode
+- **Conditional rules** — keyword hits inject hard constraints (e.g. "SQL" → use CTEs)
 
-## 安装
+## Installation
 
-### npm（推荐）
+### npm (recommended)
 
-编辑 `~/.config/opencode/opencode.json`：
+Edit `~/.config/opencode/opencode.json`:
 
 ```jsonc
 {
@@ -44,9 +44,9 @@ OpenCode 插件：基于对话上下文自动优化你的提示词。
 }
 ```
 
-重启 OpenCode。
+Restart OpenCode.
 
-### 本地开发
+### Local development
 
 ```jsonc
 {
@@ -56,7 +56,7 @@ OpenCode 插件：基于对话上下文自动优化你的提示词。
 }
 ```
 
-然后：
+Then:
 
 ```powershell
 cd path/to/opencode-prompt-polisher
@@ -74,52 +74,53 @@ npm installs: re-run the install command or `npm update opencode-prompt-polisher
 
 Remove the plugin entry from your OpenCode config (`npm remove opencode-prompt-polisher` for npm installs), restart OpenCode.
 
-## 命令
+## Commands
 
-| 命令 | 行为 |
+| Command | Behavior |
 |---|---|
-| `/polish <prompt>` | 优化后填入输入框，等你编辑或发送 |
-| `/polish-send <prompt>` | 优化后自动发送 |
+| `/polish <prompt>` | Fills the polished result into the input box; you edit or send |
+| `/polish-send <prompt>` | Sends the polished result automatically |
 
-### 示例
+### Examples
 
 ```
 /polish 这个函数性能有问题
 ```
 
-→ 输入框出现优化后的提示词，弹出 "Polish Ready" 提示。你可以直接发送，也可以先编辑。
+→ The polished prompt appears in the input box with a "Polish Ready" notice. Send it directly or edit first.
 
 ```
 /polish-send 写一个二分查找
 ```
 
-→ 优化后直接发送，无需再操作。
+→ Polished and sent directly, no further action needed.
 
-## 配置
+## Configuration
 
-创建 `~/.config/opencode/polish.jsonc`：
+Create `~/.config/opencode/polish.jsonc`:
 
 ```jsonc
 {
-  // 模型，格式 "provider/model-id"
-  // 通过 OpenCode 内部路由调用，无需单独配置 apiKey
+  // Model, format "provider/model-id".
+  // Routed internally through OpenCode; no separate apiKey needed.
   "model": "opencode/deepseek-v4-flash-free",
 
-  // 上下文提取设置
+  // Context extraction settings
   "context": {
-    "maxMessages": 6,           // 注入最近 N 条消息
-    "maxCharsPerMessage": 500   // 每条消息截断到该长度
+    "maxMessages": 6,           // inject the most recent N messages
+    "maxCharsPerMessage": 500   // truncate each message to this length
   },
 
-  // 优化强度（仅配置文件生效，不会出现在优化指令中）
-  // "light"  - 最小改动，只修正歧义
-  // "medium" - 标准优化（默认）
-  // "heavy"  - 激进重写，补充最大细节
+  // Intensity (config-file only; never appears in the polish instruction)
+  // "light"  - minimal edits, disambiguation only
+  // "medium" - standard polish (default)
+  // "heavy"  - aggressive rewrite, maximum added detail
   "intensity": "medium",
 
-  // 条件式规则：用户 prompt 含关键词（大小写不敏感子串匹配）时，
-  // 把对应 rule 注入到 polish agent 的 user message 中作为硬约束。
-  // `default` 始终包含；`patterns` 多条可同时命中。
+  // Conditional rules: when the user prompt contains a keyword
+  // (case-insensitive substring match), the matching rule is injected into
+  // the polish agent's user message as a hard constraint.
+  // `default` always applies; multiple `patterns` can hit at once.
   "rules": {
     "default": [
       "保持与用户原 prompt 相同的语言（中文保持中文，英文保持英文，技术术语保持英文）"
@@ -142,46 +143,46 @@ Remove the plugin entry from your OpenCode config (`npm remove opencode-prompt-p
 }
 ```
 
-不创建配置文件也能用，会用内置默认值。
+Works without a config file too, using built-in defaults.
 
-## 工作原理
+## How it works
 
-1. `command.execute.before` hook 拦截 `/polish` 命令
-2. 读取当前会话最近的 N 条消息作为上下文
-3. 按关键词匹配 `rules.patterns`，把命中的规则作为硬约束注入到 user message
-4. 在隐藏的 `polish` 子 agent 中调用 LLM 优化（agent 工具集为空）
-5. 把优化结果写回输入框（`/polish`）或直接发送（`/polish-send`）
+1. The `command.execute.before` hook intercepts `/polish` commands
+2. Reads the current session's most recent N messages as context
+3. Matches `rules.patterns` by keyword, injecting hits as hard constraints into the user message
+4. Calls the LLM in a hidden `polish` sub-agent (empty toolset)
+5. Writes the result back to the input box (`/polish`) or sends it (`/polish-send`)
 
-### 规则匹配机制
+### Rule matching
 
-`rules.patterns` 里的 `match` 关键词是大小写不敏感的子串匹配：
+Keywords in `rules.patterns[].match` are case-insensitive substring matches:
 
-| 用户 prompt 包含 | 命中的硬约束 |
+| User prompt contains | Hard constraint applied |
 |---|---|
-| `code` / `function` / `写一个` / `test` / `测试` | 优先 TypeScript、提前返回、注明测试框架… |
-| `sql` / `数据库` / `query` | 用 CTE 优先、参数化输入… |
-| `doc` / `README` / `文档` | Markdown 标题层级、配代码示例… |
-| 无任何匹配 | 仅 `default` 规则 |
+| `code` / `function` / `写一个` / `test` / `测试` | Prefer TypeScript, early returns, name the test framework… |
+| `sql` / `数据库` / `query` | CTE-first, parameterized inputs… |
+| `doc` / `README` / `文档` | Markdown heading levels, code examples… |
+| No match | Only the `default` rule |
 
-LLM 把命中的规则视为不可违反的硬约束 —— 优化结果里必须反映这些要求。
+The LLM treats matched rules as inviolable hard constraints — the polished result must reflect them.
 
-## 开发
+## Development
 
 ```powershell
-npm run build              # tsup 打包
-npm run typecheck          # tsc 类型检查
-node tests/match-rules.test.mjs   # 跑 rules 匹配测试（8 个用例）
+npm run build              # tsup bundle
+npm run typecheck          # tsc typecheck
+node tests/match-rules.test.mjs   # rule-matching tests (8 cases)
 ```
 
-发版流程（推送 tag 自动发布到 npm）：
+Release flow (pushing a tag auto-publishes to npm):
 
 ```powershell
 npm version patch   # 0.1.0 → 0.1.1
 git push
-git push --tags     # 触发 GitHub Actions
+git push --tags     # triggers GitHub Actions
 ```
 
-GitHub Actions 配置在 `.github/workflows/publish.yml`。仓库需要配置 `NPM_TOKEN` secret。
+GitHub Actions config lives in `.github/workflows/publish.yml`. The repo needs an `NPM_TOKEN` secret.
 
 ## License
 
